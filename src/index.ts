@@ -14,6 +14,11 @@ import { recall, RecallSchema } from "./tools/recall.js";
 import { recallAll } from "./tools/recall-all.js";
 import { forget, ForgetSchema } from "./tools/forget.js";
 import { memoryStats } from "./tools/stats.js";
+import {
+  handleValidateFile, ValidateFileSchema,
+  handleCheckDrift, CheckDriftSchema,
+  handleGetChecklist,
+} from "./tools/guardian.js";
 
 // ---------------------------------------------------------------------------
 // Init DB
@@ -27,7 +32,7 @@ const stmts = prepareStatements(db);
 // ---------------------------------------------------------------------------
 
 const server = new Server(
-  { name: "lucid", version: "1.0.0" },
+  { name: "lucid", version: "1.1.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -37,10 +42,10 @@ const server = new Server(
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
+    // ── Memory ──────────────────────────────────────────────────────────────
     {
       name: "remember",
-      description:
-        "Store a fact, decision, or observation about an entity in the knowledge graph.",
+      description: "Store a fact, decision, or observation about an entity in the knowledge graph.",
       inputSchema: {
         type: "object",
         properties: {
@@ -72,8 +77,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "recall",
-      description:
-        "Search memory using full-text search. Fast, indexed, supports partial matches and stemming.",
+      description: "Search memory using full-text search. Fast, indexed, supports partial matches and stemming.",
       inputSchema: {
         type: "object",
         properties: {
@@ -103,6 +107,46 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       description: "Get memory usage statistics.",
       inputSchema: { type: "object", properties: {} },
     },
+    // ── Logic Guardian ───────────────────────────────────────────────────────
+    {
+      name: "validate_file",
+      description:
+        "Run Logic Guardian validation on a source file. Detects LLM drift patterns: " +
+        "logic inversions, null propagation, type confusion, copy-paste drift, silent exceptions, and more. " +
+        "Supports Python, JavaScript, TypeScript. Use after writing or modifying any code.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Absolute or relative path to the file to validate." },
+        },
+        required: ["path"],
+      },
+    },
+    {
+      name: "check_drift",
+      description:
+        "Analyze a code snippet for LLM drift patterns without saving to disk. " +
+        "Use this to validate code before writing it to a file.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          code: { type: "string", description: "The code snippet to analyze." },
+          language: {
+            type: "string",
+            enum: ["python", "javascript", "typescript", "generic"],
+            description: "Programming language. Defaults to 'generic'.",
+          },
+        },
+        required: ["code"],
+      },
+    },
+    {
+      name: "get_checklist",
+      description:
+        "Get the full Logic Guardian validation checklist (5 passes). " +
+        "Call this before marking any implementation task as done.",
+      inputSchema: { type: "object", properties: {} },
+    },
   ],
 }));
 
@@ -117,53 +161,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     let text: string;
 
     switch (name) {
-      case "remember": {
-        const input = RememberSchema.parse(args);
-        text = remember(stmts, input);
-        break;
-      }
-      case "relate": {
-        const input = RelateSchema.parse(args);
-        text = relate(stmts, input);
-        break;
-      }
-      case "recall": {
-        const input = RecallSchema.parse(args);
-        text = recall(stmts, input);
-        break;
-      }
-      case "recall_all": {
-        text = recallAll(db, stmts);
-        break;
-      }
-      case "forget": {
-        const input = ForgetSchema.parse(args);
-        text = forget(stmts, input);
-        break;
-      }
-      case "memory_stats": {
-        text = memoryStats(db, stmts);
-        break;
-      }
+      // Memory
+      case "remember":    text = remember(stmts, RememberSchema.parse(args)); break;
+      case "relate":      text = relate(stmts, RelateSchema.parse(args)); break;
+      case "recall":      text = recall(stmts, RecallSchema.parse(args)); break;
+      case "recall_all":  text = recallAll(db, stmts); break;
+      case "forget":      text = forget(stmts, ForgetSchema.parse(args)); break;
+      case "memory_stats": text = memoryStats(db, stmts); break;
+
+      // Logic Guardian
+      case "validate_file": text = handleValidateFile(ValidateFileSchema.parse(args)); break;
+      case "check_drift":   text = handleCheckDrift(CheckDriftSchema.parse(args)); break;
+      case "get_checklist": text = handleGetChecklist(); break;
+
       default:
-        return {
-          content: [{ type: "text", text: `Unknown tool: ${name}` }],
-          isError: true,
-        };
+        return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
     }
 
     return { content: [{ type: "text", text }] };
   } catch (err) {
     const message = err instanceof z.ZodError
       ? `Validation error: ${err.errors.map((e) => e.message).join(", ")}`
-      : err instanceof Error
-        ? err.message
-        : String(err);
-
-    return {
-      content: [{ type: "text", text: `Error: ${message}` }],
-      isError: true,
-    };
+      : err instanceof Error ? err.message : String(err);
+    return { content: [{ type: "text", text: `Error: ${message}` }], isError: true };
   }
 });
 

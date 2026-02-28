@@ -1,6 +1,6 @@
 {
   "name": "@a13xu/lucid",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Persistent memory for Claude Code agents — SQLite + FTS5 knowledge graph via MCP",
   "type": "module",
   "bin": {
