@@ -1,0 +1,23 @@
+{
+  "name": "lucid",
+  "version": "1.0.0",
+  "description": "Lucid — MCP Memory Server cu SQLite + FTS5 pentru Claude Code",
+  "type": "module",
+  "bin": {
+    "lucid": "./build/index.js"
+  },
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "better-sqlite3": "^11.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  }
+}

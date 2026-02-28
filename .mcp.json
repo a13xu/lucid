@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "lucid": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/ABSOLUTE/PATH/lucid/build/index.js"],
+      "env": {
+        "MEMORY_DB_PATH": "/your/project/.claude/memory.db"
+      }
+    }
+  }
+}
