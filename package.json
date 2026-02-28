@@ -1,7 +1,7 @@
 {
   "name": "@a13xu/lucid",
   "version": "1.4.0",
-  "description": "Persistent memory for Claude Code agents — SQLite + FTS5 knowledge graph via MCP",
+  "description": "Memory, code indexing, and validation for Claude Code agents — SQLite + FTS5, zlib compression, Logic Guardian drift detection",
   "type": "module",
   "bin": {
     "lucid": "./build/index.js"
@@ -22,6 +22,9 @@
     "memory",
     "sqlite",
     "knowledge-graph",
+    "code-indexing",
+    "logic-guardian",
+    "drift-detection",
     "ai",
     "anthropic"
   ],
