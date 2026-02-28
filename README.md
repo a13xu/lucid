@@ -1,8 +1,8 @@
 # @a13xu/lucid
 
-Memory, code indexing, and validation for Claude Code agents — backed by **SQLite + FTS5**.
+Token-efficient memory, code indexing, and validation for Claude Code agents — backed by **SQLite + FTS5**.
 
-Stores a persistent knowledge graph (entities, relations, observations), indexes source files as compressed binary with change detection, and validates code for LLM drift patterns.
+Stores a persistent knowledge graph (entities, relations, observations), indexes source files as compressed binary with change detection, retrieves minimal relevant context via TF-IDF or Qdrant, and validates code for LLM drift patterns.
 
 ## Install
 
@@ -35,13 +35,15 @@ Default DB path: `~/.claude/memory.db`
 ## Quick start
 
 ```
-1. "Index this project" → init_project() → scans CLAUDE.md, package.json, src/
-2. Write code          → sync_file(path) → compressed + hashed in DB
-3. "Where is X used?"  → grep_code("X") → matching lines only, no full file
-4. "What do we know?"  → recall("query") → knowledge graph search
+1. "Index this project" → init_project()        → scans CLAUDE.md, package.json, src/**
+2. Write code          → sync_file(path)         → compressed + hashed + diff stored
+3. "What's relevant?"  → get_context("auth flow") → TF-IDF ranked skeletons, ~500 tokens
+4. "What changed?"     → get_recent(hours=2)      → line diffs of recent edits
+5. "Where is X used?"  → grep_code("X")           → matching lines only, ~30 tokens
+6. "What do we know?"  → recall("query")          → knowledge graph search
 ```
 
-## Tools (13)
+## Tools (15)
 
 ### Memory
 | Tool | Description |
@@ -56,10 +58,16 @@ Default DB path: `~/.claude/memory.db`
 ### Code indexing
 | Tool | Description |
 |---|---|
-| `init_project` | Scan project directory and bootstrap knowledge graph. Reads `CLAUDE.md`, `package.json`/`pyproject.toml`, `README.md`, `.mcp.json`, `logic-guardian.yaml`, source files. Also installs a Claude Code hook for auto-sync. |
-| `sync_file` | Index or re-index a single file after writing/editing. Stores compressed binary (zlib-9), skips instantly if SHA-256 hash unchanged. |
+| `init_project` | Scan project directory recursively and bootstrap knowledge graph. Reads `CLAUDE.md`, `package.json`/`pyproject.toml`, `README.md`, `.mcp.json`, `logic-guardian.yaml`, all source files. Installs a Claude Code hook for auto-sync. |
+| `sync_file` | Index or re-index a single file after writing/editing. Stores compressed binary (zlib-9), skips instantly if SHA-256 hash unchanged. Stores line-level diff from previous version. |
 | `sync_project` | Re-index entire project incrementally. Reports compression ratio. |
 | `grep_code` | Regex search across all indexed files. Decompresses binary on-the-fly, returns only matching lines with context — ~20-50 tokens vs reading full files. |
+
+### Token optimization
+| Tool | Description |
+|---|---|
+| `get_context` | **Smart context retrieval.** Ranks all indexed files by TF-IDF relevance (or Qdrant vector search if `QDRANT_URL` is set), applies recency boost, returns skeletons (imports + signatures only) for large files. Respects `maxContextTokens` budget. |
+| `get_recent` | Return files modified in the last N hours with line-level diffs. |
 
 ### Logic Guardian
 | Tool | Description |
@@ -68,18 +76,112 @@ Default DB path: `~/.claude/memory.db`
 | `check_drift` | Analyze a code snippet inline without saving to disk. |
 | `get_checklist` | Return the full 5-pass validation protocol (Logic Trace, Contract Verification, Stupid Mistakes, Integration Sanity, Explain It). |
 
-## Why no vectors?
+## Token optimization in depth
 
-Code has explicit structure — no NLP needed:
+### How `get_context` works
+
+```
+query: "auth middleware"
+         ↓
+  1. TF-IDF score all indexed files against query
+     (or Qdrant top-k if QDRANT_URL is set)
+         ↓
+  2. Boost recently-modified files (+0.3 score)
+         ↓
+  3. Apply whitelist dirs filter (if configured)
+         ↓
+  4. For each file within token budget:
+       file < maxTokensPerFile  → return full source
+       file > maxTokensPerFile  → return skeleton only
+                                   (imports + signatures + TODOs)
+                                   + relevant fragments around query terms
+         ↓
+  output: ~500–2000 tokens  vs  5000–20000 for reading full files
+```
+
+### Skeleton pruning (AST-based)
+
+Large files are replaced with their structural skeleton:
+
+```typescript
+// src/middleware/auth.ts [skeleton]
+// Validates JWT tokens and attaches user to request context
+
+import { Request, Response, NextFunction } from "express"
+import { verifyToken } from "../services/jwt.js"
+
+// — exports —
+export function authMiddleware(req: Request, res: Response, next: NextFunction): void { … }
+export function requireRole(role: string): RequestHandler { … }
+export type AuthenticatedRequest = Request & { user: User }
+```
+
+vs reading the full 200-line file.
+
+### Qdrant vector search (optional)
+
+Set env vars to enable semantic search instead of TF-IDF:
+
+```bash
+QDRANT_URL=http://localhost:6333
+QDRANT_API_KEY=your-key          # optional
+OPENAI_API_KEY=sk-...            # for embeddings
+EMBEDDING_MODEL=text-embedding-3-small  # optional
+```
+
+Or in `.mcp.json`:
+```json
+{
+  "mcpServers": {
+    "lucid": {
+      "command": "npx", "args": ["-y", "@a13xu/lucid"],
+      "env": {
+        "QDRANT_URL": "http://localhost:6333",
+        "OPENAI_API_KEY": "sk-..."
+      }
+    }
+  }
+}
+```
+
+Falls back to TF-IDF automatically if Qdrant is unreachable.
+
+### Configuration (`lucid.config.json`)
+
+Create in your project root to customize behavior:
+
+```json
+{
+  "whitelistDirs": ["src", "backend", "api"],
+  "blacklistDirs": ["migrations", "fixtures"],
+  "maxTokensPerFile": 400,
+  "maxContextTokens": 6000,
+  "recentWindowHours": 12
+}
+```
+
+| Key | Default | Description |
+|---|---|---|
+| `whitelistDirs` | — | Only index/return files from these dirs |
+| `blacklistDirs` | — | Extra dirs to skip (merged with built-in skips) |
+| `maxTokensPerFile` | `400` | Files above this get skeleton treatment |
+| `maxContextTokens` | `4000` | Total token budget for `get_context` |
+| `recentWindowHours` | `24` | "Recently touched" threshold |
+
+## Why no vectors by default?
+
+Code has explicit structure — no NLP needed for most queries:
 
 | Need | Approach | Tokens |
 |---|---|---|
 | "Where is X defined?" | `grep_code("export.*X")` | ~30 |
 | "What does auth.ts export?" | `recall("auth.ts")` | ~50 |
+| "What changed recently?" | `get_recent(hours=2)` | ~200 |
+| "Context for this task" | `get_context("auth flow")` | ~500 |
 | "Project conventions?" | `recall("CLAUDE.md conventions")` | ~80 |
-| Read full file | `Read tool` | ~500-2000 |
+| Read full file | `Read tool` | ~500–2000 |
 
-Source files are stored as **zlib-deflate level 9 BLOBs** (~70% smaller than plain text). Change detection via SHA-256 means `sync_file` is instant on unchanged files.
+TF-IDF is fast, deterministic, and requires zero external services. Qdrant is available when you need semantic similarity across large codebases.
 
 ## Why SQLite + FTS5?
 
@@ -90,6 +192,7 @@ Source files are stored as **zlib-deflate level 9 BLOBs** (~70% smaller than pla
 | Concurrent reads | Lock entire file | WAL mode |
 | Code storage | Plain text | Compressed BLOB + hash |
 | Change detection | Manual diff | SHA-256 per file |
+| Diff history | None | Line-level diffs per file |
 
 ## Entity types
 `person` · `project` · `decision` · `pattern` · `tool` · `config` · `bug` · `convention`
@@ -104,7 +207,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},
   | npx @a13xu/lucid
 ```
 
-In Claude Code: run `/mcp` — you should see `lucid` with 13 tools.
+In Claude Code: run `/mcp` — you should see `lucid` with 15 tools.
 
 ## Tech stack
 
@@ -113,5 +216,6 @@ In Claude Code: run `/mcp` — you should see `lucid` with 13 tools.
 - **Database:** `better-sqlite3` (synchronous, WAL mode)
 - **Compression:** Node.js built-in `zlib` (deflate level 9)
 - **Hashing:** SHA-256 via `crypto` (change detection)
+- **Ranking:** TF-IDF (built-in) or Qdrant (optional, via REST)
 - **Validation:** `zod`
 - **Transport:** stdio
