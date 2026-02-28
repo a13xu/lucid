@@ -14,20 +14,31 @@ export type InitProjectInput = z.infer<typeof InitProjectSchema>;
 // Instalează PostToolUse hook în .claude/settings.json
 // ---------------------------------------------------------------------------
 
+// New hook format (Claude Code ≥ 2025):
+// { "matcher": { "tools": ["Write", "Edit"] }, "hooks": [{ "type": "command", "command": "..." }] }
+interface HookEntry {
+  matcher?: { tools?: string[] } | string;
+  hooks?: Array<{ type: string; command: string }>;
+  // old format (for detection only)
+  command?: string;
+}
+
+const LUCID_MARKER = "Lucid: call sync_file";
+
+const LUCID_HOOK: HookEntry = {
+  matcher: { tools: ["Write", "Edit", "NotebookEdit"] },
+  hooks: [
+    {
+      type: "command",
+      command: `echo '🔄 ${LUCID_MARKER}(path) to keep knowledge graph up to date'`,
+    },
+  ],
+};
+
 function installHook(dir: string): { installed: boolean; reason: string } {
   const claudeDir = join(dir, ".claude");
   const settingsPath = join(claudeDir, "settings.json");
 
-  const HOOK_CMD =
-    'node -e "const p=process.argv[1]; if(p) require(\'child_process\').execSync(\'node \'+require(\'path\').resolve(\'node_modules/.bin/lucid\'||\'\')+\' --noop\', {stdio:\'ignore\'})" "$TOOL_INPUT_PATH" 2>/dev/null || true';
-
-  // Hook mai simplu și portabil: apelează sync_file prin claude mcp
-  const HOOK = {
-    matcher: "Write|Edit|NotebookEdit",
-    command: "echo '{\"tool\":\"sync_file\",\"path\":\"'\"$TOOL_INPUT_PATH\"'\"}' | true",
-  };
-
-  // Citim sau cream settings.json
   let settings: Record<string, unknown> = {};
   if (existsSync(settingsPath)) {
     try {
@@ -37,25 +48,20 @@ function installHook(dir: string): { installed: boolean; reason: string } {
     }
   }
 
-  // Verifică dacă hook-ul e deja instalat
-  const hooks = settings["hooks"] as Record<string, unknown[]> | undefined ?? {};
-  const postToolUse = (hooks["PostToolUse"] as Array<{ matcher?: string }> | undefined) ?? [];
+  const hooks = (settings["hooks"] ?? {}) as Record<string, HookEntry[]>;
+  const postToolUse: HookEntry[] = hooks["PostToolUse"] ?? [];
 
-  const alreadyInstalled = postToolUse.some(
-    (h) => h.matcher?.includes("Write") && String(h).includes("lucid")
-  );
+  // Detectează atât formatul vechi cât și cel nou
+  const alreadyInstalled = postToolUse.some((h) => {
+    const cmd = h.command ?? h.hooks?.[0]?.command ?? "";
+    return cmd.includes(LUCID_MARKER);
+  });
 
   if (alreadyInstalled) {
     return { installed: false, reason: "already installed" };
   }
 
-  // Adaugă hook-ul — notifică Claude să cheme sync_file
-  const lucidHook = {
-    matcher: "Write|Edit|NotebookEdit",
-    command: "echo '🔄 Lucid: call sync_file(path) to keep knowledge graph up to date'",
-  };
-
-  hooks["PostToolUse"] = [...postToolUse, lucidHook];
+  hooks["PostToolUse"] = [...postToolUse, LUCID_HOOK];
   settings["hooks"] = hooks;
 
   mkdirSync(claudeDir, { recursive: true });
