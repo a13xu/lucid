@@ -20,6 +20,10 @@ import {
   handleGetChecklist,
 } from "./tools/guardian.js";
 import { handleInitProject, InitProjectSchema } from "./tools/init.js";
+import {
+  handleSyncFile, SyncFileSchema,
+  handleSyncProject, SyncProjectSchema,
+} from "./tools/sync.js";
 
 // ---------------------------------------------------------------------------
 // Init DB
@@ -127,6 +131,35 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
+    {
+      name: "sync_file",
+      description:
+        "Index or re-index a single source file after it was written or modified. " +
+        "Extracts exports, description, and open TODOs, then updates the knowledge graph. " +
+        "IMPORTANT: call this automatically after every Write or Edit tool call.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Absolute or relative path to the modified file." },
+        },
+        required: ["path"],
+      },
+    },
+    {
+      name: "sync_project",
+      description:
+        "Re-index the entire project directory incrementally. " +
+        "Use this when multiple files have changed (e.g. after a refactor or git pull).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          directory: {
+            type: "string",
+            description: "Project root directory. Defaults to current working directory.",
+          },
+        },
+      },
+    },
     // ── Logic Guardian ───────────────────────────────────────────────────────
     {
       name: "validate_file",
@@ -189,8 +222,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "forget":      text = forget(stmts, ForgetSchema.parse(args)); break;
       case "memory_stats": text = memoryStats(db, stmts); break;
 
-      // Init
+      // Init & Sync
       case "init_project":  text = handleInitProject(stmts, InitProjectSchema.parse(args)); break;
+      case "sync_file":     text = handleSyncFile(stmts, SyncFileSchema.parse(args)); break;
+      case "sync_project":  text = handleSyncProject(stmts, SyncProjectSchema.parse(args)); break;
 
       // Logic Guardian
       case "validate_file": text = handleValidateFile(ValidateFileSchema.parse(args)); break;
