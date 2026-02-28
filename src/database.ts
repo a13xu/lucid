@@ -100,6 +100,16 @@ function createSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_fc_filepath ON file_contents(filepath);
     CREATE INDEX IF NOT EXISTS idx_fc_hash     ON file_contents(content_hash);
+    CREATE INDEX IF NOT EXISTS idx_fc_indexed  ON file_contents(indexed_at);
+
+    -- Diffs între versiuni consecutive (pentru get_recent)
+    CREATE TABLE IF NOT EXISTS file_diffs (
+      filepath    TEXT PRIMARY KEY,
+      prev_hash   TEXT NOT NULL,
+      diff_text   TEXT NOT NULL,
+      changed_at  INTEGER DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_fd_changed ON file_diffs(changed_at);
   `);
 }
 
@@ -123,13 +133,25 @@ export interface FileContentRow {
   indexed_at: number;
 }
 
+export interface FileDiffRow {
+  filepath: string;
+  prev_hash: string;
+  diff_text: string;
+  changed_at: number;
+}
+
 export interface Statements {
   // file_contents
   getFileByPath:    Stmt<[string], FileContentRow>;
   upsertFile:       WriteStmt<[string, Buffer, string, number, number, string]>;
-  getAllFiles:       Stmt<[], Pick<FileContentRow, "filepath" | "content" | "language" | "content_hash">>;
+  getAllFiles:       Stmt<[], Pick<FileContentRow, "filepath" | "content" | "language" | "content_hash" | "indexed_at">>;
+  getRecentFiles:   Stmt<[number], Pick<FileContentRow, "filepath" | "language" | "indexed_at">>;
   deleteFile:       WriteStmt<[string]>;
   fileStorageStats: Stmt<[], { count: number; total_original: number; total_compressed: number }>;
+  // file_diffs
+  upsertDiff:    WriteStmt<[string, string, string]>;
+  getDiff:       Stmt<[string], FileDiffRow>;
+  getRecentDiffs: Stmt<[number], FileDiffRow>;
   // entities
   getEntityByName:     Stmt<[string], EntityRow>;
   insertEntity:        WriteStmt<[string, string, string]>;
@@ -166,12 +188,33 @@ export function prepareStatements(db: Database.Database): Statements {
          indexed_at = unixepoch()`
     ),
 
-    getAllFiles: db.prepare<[], Pick<FileContentRow, "filepath" | "content" | "language" | "content_hash">>(
-      "SELECT filepath, content, language, content_hash FROM file_contents"
+    getAllFiles: db.prepare<[], Pick<FileContentRow, "filepath" | "content" | "language" | "content_hash" | "indexed_at">>(
+      "SELECT filepath, content, language, content_hash, indexed_at FROM file_contents"
+    ),
+
+    getRecentFiles: db.prepare<[number], Pick<FileContentRow, "filepath" | "language" | "indexed_at">>(
+      "SELECT filepath, language, indexed_at FROM file_contents WHERE indexed_at >= ? ORDER BY indexed_at DESC"
     ),
 
     deleteFile: db.prepare<[string], unknown>(
       "DELETE FROM file_contents WHERE filepath = ?"
+    ),
+
+    upsertDiff: db.prepare<[string, string, string], unknown>(
+      `INSERT INTO file_diffs (filepath, prev_hash, diff_text)
+       VALUES (?, ?, ?)
+       ON CONFLICT(filepath) DO UPDATE SET
+         prev_hash  = excluded.prev_hash,
+         diff_text  = excluded.diff_text,
+         changed_at = unixepoch()`
+    ),
+
+    getDiff: db.prepare<[string], FileDiffRow>(
+      "SELECT * FROM file_diffs WHERE filepath = ?"
+    ),
+
+    getRecentDiffs: db.prepare<[number], FileDiffRow>(
+      "SELECT * FROM file_diffs WHERE changed_at >= ? ORDER BY changed_at DESC"
     ),
 
     fileStorageStats: db.prepare<[], { count: number; total_original: number; total_compressed: number }>(

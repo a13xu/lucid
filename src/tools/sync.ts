@@ -4,6 +4,8 @@ import { existsSync, readFileSync } from "fs";
 import type { Statements } from "../database.js";
 import { indexFile, upsertFileIndex } from "../indexer/file.js";
 import { indexProject, type IndexResult } from "../indexer/project.js";
+import { computeDiff } from "../retrieval/context.js";
+import { decompress } from "../store/content.js";
 
 const SUPPORTED_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rs"]);
 
@@ -27,10 +29,21 @@ export function handleSyncFile(stmts: Statements, args: z.infer<typeof SyncFileS
   if (!index) return `Could not read file: ${filepath}`;
 
   const source = readFileSync(filepath, "utf-8");
+
+  // Capture previous content before upsert (for diff)
+  const prevRow = stmts.getFileByPath.get(filepath);
+  const prevSource = prevRow ? decompress(prevRow.content) : null;
+
   const result = upsertFileIndex(index, source, stmts);
 
   if (!result.stored) {
     return `⏭️  Unchanged: ${filepath} (hash match — skipped)`;
+  }
+
+  // Store diff when file changed
+  if (prevRow && prevSource !== null) {
+    const diff = computeDiff(prevSource, source);
+    stmts.upsertDiff.run(filepath, prevRow.content_hash, diff);
   }
 
   const ratio = Math.round((1 - (result.savedBytes + Buffer.byteLength(source, "utf-8") - result.savedBytes) / Buffer.byteLength(source, "utf-8")) * 100);

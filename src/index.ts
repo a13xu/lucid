@@ -25,6 +25,10 @@ import {
   handleSyncFile, SyncFileSchema,
   handleSyncProject, SyncProjectSchema,
 } from "./tools/sync.js";
+import {
+  handleGetContext, GetContextSchema,
+  handleGetRecent, GetRecentSchema,
+} from "./tools/context.js";
 
 // ---------------------------------------------------------------------------
 // Init DB
@@ -38,7 +42,7 @@ const stmts = prepareStatements(db);
 // ---------------------------------------------------------------------------
 
 const server = new Server(
-  { name: "lucid", version: "1.1.0" },
+  { name: "lucid", version: "1.5.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -178,6 +182,43 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["pattern"],
       },
     },
+    // ── Context & Token Optimization ─────────────────────────────────────────
+    {
+      name: "get_context",
+      description:
+        "Retrieve the minimal relevant context for a task or query. " +
+        "Uses TF-IDF scoring (or Qdrant vector search if configured) to rank files by relevance, " +
+        "applies recency boost for recently modified files, and returns skeletons (signatures only) " +
+        "for large files to stay within the token budget. " +
+        "Configure limits in lucid.config.json. Set QDRANT_URL env var for vector search.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "What you are working on or searching for" },
+          maxTokens: { type: "number", description: "Total token budget (default 4000)" },
+          dirs: { type: "array", items: { type: "string" }, description: "Whitelist directories (e.g. [\"src\", \"backend\"])" },
+          recentOnly: { type: "boolean", description: "Only files modified within recentWindowHours" },
+          recentHours: { type: "number", description: "Override recent window (hours)" },
+          skeletonOnly: { type: "boolean", description: "Always show skeleton (signatures only)" },
+          topK: { type: "number", description: "Max files to consider (default 10)" },
+        },
+        required: ["query"],
+      },
+    },
+    {
+      name: "get_recent",
+      description:
+        "Return files modified recently with line-level diffs. " +
+        "Shows what changed in each file since the previous sync. " +
+        "Useful for catching up after a git pull or resuming a session.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          hours: { type: "number", description: "Look back N hours (default 24)" },
+          withDiffs: { type: "boolean", description: "Include line diffs (default true)" },
+        },
+      },
+    },
     // ── Logic Guardian ───────────────────────────────────────────────────────
     {
       name: "validate_file",
@@ -247,6 +288,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // Grep
       case "grep_code":     text = handleGrepCode(stmts, GrepCodeSchema.parse(args)); break;
+
+      // Context & Token Optimization
+      case "get_context":   text = await handleGetContext(stmts, GetContextSchema.parse(args)); break;
+      case "get_recent":    text = handleGetRecent(stmts, GetRecentSchema.parse(args)); break;
 
       // Logic Guardian
       case "validate_file": text = handleValidateFile(ValidateFileSchema.parse(args)); break;
