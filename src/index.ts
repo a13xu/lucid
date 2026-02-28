@@ -311,7 +311,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "memory_stats": text = memoryStats(db, stmts); break;
 
       // Init & Sync
-      case "init_project":  text = handleInitProject(stmts, InitProjectSchema.parse(args)); break;
+      case "init_project":  text = await handleInitProject(stmts, InitProjectSchema.parse(args)); break;
       case "sync_file":     text = handleSyncFile(stmts, SyncFileSchema.parse(args)); break;
       case "sync_project":  text = handleSyncProject(stmts, SyncProjectSchema.parse(args)); break;
 

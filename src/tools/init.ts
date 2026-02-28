@@ -3,9 +3,37 @@ import { resolve, join } from "path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import type { Statements } from "../database.js";
 import { indexProject, type IndexResult } from "../indexer/project.js";
+import {
+  saveAdminConfig,
+  loadAdminConfig,
+  isAdminConfigured,
+  sendTestAlert,
+} from "../security/alerts.js";
 
 export const InitProjectSchema = z.object({
   directory: z.string().optional(),
+
+  // ── Admin alert configuration (asked once at project init) ──────────────
+  /** Display name of the security admin */
+  adminName: z.string().optional(),
+  /** Email address to send security alerts to */
+  adminEmail: z.string().email().optional(),
+  /** SMTP server hostname (e.g. smtp.gmail.com) */
+  smtpHost: z.string().optional(),
+  /** SMTP port: 587 (STARTTLS, default) or 465 (direct TLS) */
+  smtpPort: z.number().int().min(1).max(65535).optional(),
+  /** SMTP login username (often same as adminEmail) */
+  smtpUser: z.string().optional(),
+  /** "From" display name + address (e.g. "Lucid Security <alerts@co.com>") */
+  smtpFrom: z.string().optional(),
+  /** Generic HTTP webhook URL (receives JSON POST, HMAC-signed if LUCID_WEBHOOK_SECRET is set) */
+  webhookUrl: z.string().url().optional(),
+  /** Slack incoming webhook URL */
+  slackWebhookUrl: z.string().url().optional(),
+  /** Which severities trigger an alert: default ["critical","high"] */
+  alertOn: z.array(z.enum(["critical", "high", "medium", "low"])).optional(),
+  /** Human-readable project name shown in alerts */
+  projectName: z.string().optional(),
 });
 
 export type InitProjectInput = z.infer<typeof InitProjectSchema>;
@@ -103,7 +131,7 @@ function injectClaudeMdInstruction(dir: string): boolean {
 // Main handler
 // ---------------------------------------------------------------------------
 
-export function handleInitProject(stmts: Statements, input: InitProjectInput): string {
+export async function handleInitProject(stmts: Statements, input: InitProjectInput): Promise<string> {
   const dir = resolve(input.directory ?? process.cwd());
   const results: IndexResult[] = indexProject(dir, stmts);
 
@@ -119,7 +147,7 @@ export function handleInitProject(stmts: Statements, input: InitProjectInput): s
     }
   }
 
-  // Instalează hook PostToolUse
+  // ── Hook PostToolUse ──────────────────────────────────────────────────────
   lines.push(``);
   const hookResult = installHook(dir);
   if (hookResult.installed) {
@@ -129,10 +157,85 @@ export function handleInitProject(stmts: Statements, input: InitProjectInput): s
     lines.push(`🔗 Hook: ${hookResult.reason}`);
   }
 
-  // Injectează instrucțiune în CLAUDE.md
+  // ── CLAUDE.md injection ───────────────────────────────────────────────────
   const injected = injectClaudeMdInstruction(dir);
   if (injected) {
     lines.push(`📋 CLAUDE.md updated with sync_file() instruction`);
+  }
+
+  // ── Security admin configuration ──────────────────────────────────────────
+  lines.push(``);
+  lines.push(`🔒 Security Alerts`);
+
+  // Save any admin params provided in this call
+  const adminFields = {
+    adminName:       input.adminName,
+    adminEmail:      input.adminEmail,
+    smtpHost:        input.smtpHost,
+    smtpPort:        input.smtpPort,
+    smtpUser:        input.smtpUser,
+    smtpFrom:        input.smtpFrom,
+    webhookUrl:      input.webhookUrl,
+    slackWebhookUrl: input.slackWebhookUrl,
+    alertOn:         input.alertOn,
+    projectName:     input.projectName ?? results.find((r) => r.type === "project")?.entity,
+  };
+
+  const hasNewAdmin = Object.values(adminFields).some((v) => v !== undefined);
+  if (hasNewAdmin) {
+    // Strip undefined values before saving
+    const clean = Object.fromEntries(
+      Object.entries(adminFields).filter(([, v]) => v !== undefined)
+    );
+    saveAdminConfig(dir, clean);
+    lines.push(`   Saved admin config → .claude/lucid-admin.json`);
+
+    // Test alert channels
+    const testResults = await sendTestAlert(dir);
+    lines.push(`   Test alert results:`);
+    for (const r of testResults) lines.push(`     ${r}`);
+  } else {
+    // Check existing config
+    const existing = loadAdminConfig(dir);
+    if (isAdminConfigured()) {
+      lines.push(`   Admin: ${existing.adminName ?? existing.adminEmail ?? "configured"}`);
+      lines.push(`   Channels: ${buildChannelSummary(existing)}`);
+      lines.push(`   Alerting on: ${(existing.alertOn ?? ["critical", "high"]).join(", ")}`);
+    } else {
+      // Not configured — prompt user
+      lines.push(``);
+      lines.push(`   ⚠️  No security admin configured. Security alerts will only appear in logs.`);
+      lines.push(``);
+      lines.push(`   To enable alerts, re-run init_project() with admin parameters:`);
+      lines.push(``);
+      lines.push(`   Minimal (webhook only):`);
+      lines.push(`     init_project(`);
+      lines.push(`       adminName="Your Name",`);
+      lines.push(`       adminEmail="admin@yourcompany.com",`);
+      lines.push(`       webhookUrl="https://hooks.yourservice.com/...",`);
+      lines.push(`     )`);
+      lines.push(``);
+      lines.push(`   With Slack:`);
+      lines.push(`     init_project(`);
+      lines.push(`       adminName="Your Name",`);
+      lines.push(`       adminEmail="admin@yourcompany.com",`);
+      lines.push(`       slackWebhookUrl="https://hooks.slack.com/services/...",`);
+      lines.push(`     )`);
+      lines.push(``);
+      lines.push(`   With Email (SMTP):`);
+      lines.push(`     init_project(`);
+      lines.push(`       adminName="Your Name",`);
+      lines.push(`       adminEmail="admin@yourcompany.com",`);
+      lines.push(`       smtpHost="smtp.gmail.com",`);
+      lines.push(`       smtpPort=587,`);
+      lines.push(`       smtpUser="alerts@yourcompany.com",`);
+      lines.push(`     )`);
+      lines.push(`     # Then set in your environment:`);
+      lines.push(`     export LUCID_SMTP_PASS="your-app-password"`);
+      lines.push(``);
+      lines.push(`   SMTP password must be in LUCID_SMTP_PASS env var (never as a parameter).`);
+      lines.push(`   Webhook HMAC signing: set LUCID_WEBHOOK_SECRET env var.`);
+    }
   }
 
   lines.push(``);
@@ -140,4 +243,12 @@ export function handleInitProject(stmts: Statements, input: InitProjectInput): s
   lines.push(`Use recall() to query accumulated project knowledge.`);
 
   return lines.join("\n");
+}
+
+function buildChannelSummary(cfg: import("../security/alerts.js").AdminConfig): string {
+  const channels: string[] = [];
+  if (cfg.adminEmail && cfg.smtpHost) channels.push(`email(${cfg.adminEmail})`);
+  if (cfg.webhookUrl) channels.push(`webhook`);
+  if (cfg.slackWebhookUrl) channels.push(`slack`);
+  return channels.length > 0 ? channels.join(", ") : "none";
 }

@@ -19,6 +19,7 @@ import {
   type WafViolation,
 } from "./waf.js";
 import { allowHost } from "./ssrf.js";
+import { sendAlert, type AlertEvent } from "./alerts.js";
 
 // ---------------------------------------------------------------------------
 // Security config (populated from lucid.config.json at startup)
@@ -135,7 +136,10 @@ export function guardRequest(tool: string, args: unknown): GuardResult {
   if (_cfg.rateLimiting !== false) {
     const rl = rateLimiter.check(tool);
     if (!rl.allowed) {
-      return blocked(rateLimitMessage(tool, rl));
+      const msg = rateLimitMessage(tool, rl);
+      // Alert on repeated rate limit hits (severity: medium)
+      fireAlert({ severity: "medium", rule: "RATE_LIMIT", tool, detail: msg });
+      return blocked(msg);
     }
   }
 
@@ -144,14 +148,26 @@ export function guardRequest(tool: string, args: unknown): GuardResult {
     const waf = wafCheckArgs(tool, args as Record<string, unknown>);
     if (waf?.blocked) {
       const v = waf.violations[0];
+      const detail = v?.detail ?? "Input rejected";
+      // Alert on HIGH/CRITICAL violations immediately
+      if (v && (v.severity === "high" || v.severity === "critical")) {
+        fireAlert({ severity: v.severity, rule: v.rule, tool, detail });
+      }
       return blocked(
-        `🛡️ WAF [${v?.rule ?? "UNKNOWN"}] (${v?.severity ?? "?"}): ${v?.detail ?? "Input rejected"}`,
+        `🛡️ WAF [${v?.rule ?? "UNKNOWN"}] (${v?.severity ?? "?"}): ${detail}`,
         waf.violations
       );
     }
   }
 
   return OK;
+}
+
+/** Fire-and-forget alert — never throws, never blocks tool execution. */
+function fireAlert(event: Omit<AlertEvent, "timestamp">): void {
+  sendAlert({ ...event, timestamp: new Date().toISOString() }).catch((e: Error) => {
+    console.error(`[lucid:guard] Alert dispatch failed: ${e.message}`);
+  });
 }
 
 // ---------------------------------------------------------------------------
