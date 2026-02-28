@@ -19,6 +19,7 @@ import {
   handleCheckDrift, CheckDriftSchema,
   handleGetChecklist,
 } from "./tools/guardian.js";
+import { handleGrepCode, GrepCodeSchema } from "./tools/grep.js";
 import { handleInitProject, InitProjectSchema } from "./tools/init.js";
 import {
   handleSyncFile, SyncFileSchema,
@@ -160,6 +161,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
+    {
+      name: "grep_code",
+      description:
+        "Search indexed source files using a regex pattern. " +
+        "Decompresses stored binary content and returns only matching lines with context. " +
+        "Token-efficient: returns ~20-50 tokens instead of full file contents. " +
+        "Useful for finding function calls, variable usages, import patterns.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          pattern:  { type: "string", description: "Regex pattern to search for." },
+          language: { type: "string", enum: ["python", "javascript", "typescript", "generic"], description: "Filter by language." },
+          context:  { type: "number", description: "Lines of context before/after each match (0-10, default 2)." },
+        },
+        required: ["pattern"],
+      },
+    },
     // ── Logic Guardian ───────────────────────────────────────────────────────
     {
       name: "validate_file",
@@ -226,6 +244,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "init_project":  text = handleInitProject(stmts, InitProjectSchema.parse(args)); break;
       case "sync_file":     text = handleSyncFile(stmts, SyncFileSchema.parse(args)); break;
       case "sync_project":  text = handleSyncProject(stmts, SyncProjectSchema.parse(args)); break;
+
+      // Grep
+      case "grep_code":     text = handleGrepCode(stmts, GrepCodeSchema.parse(args)); break;
 
       // Logic Guardian
       case "validate_file": text = handleValidateFile(ValidateFileSchema.parse(args)); break;

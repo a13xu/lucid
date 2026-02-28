@@ -1,6 +1,7 @@
 import { readFileSync } from "fs";
-import { extname, basename } from "path";
+import { extname } from "path";
 import type { Statements } from "../database.js";
+import { compress, sha256 } from "../store/content.js";
 
 // ---------------------------------------------------------------------------
 // Extract meaningful info from a single source file
@@ -98,28 +99,50 @@ export function indexFile(filepath: string): FileIndex | null {
 // Write file index to DB
 // ---------------------------------------------------------------------------
 
-export function upsertFileIndex(index: FileIndex, stmts: Statements): string[] {
-  const existing = stmts.getEntityByName.get(index.module);
-  const observations: string[] = [];
+export interface UpsertResult {
+  observations: string[];
+  stored: boolean;   // false = skip (hash unchanged)
+  savedBytes: number;
+}
 
-  if (index.description) {
-    observations.push(`description: ${index.description}`);
+export function upsertFileIndex(
+  index: FileIndex,
+  source: string,
+  stmts: Statements
+): UpsertResult {
+  const fileHash = sha256(source);
+
+  // Change detection — skip everything se hash-ul e identic
+  const existing = stmts.getFileByPath.get(index.module);
+  if (existing?.content_hash === fileHash) {
+    return { observations: [], stored: false, savedBytes: 0 };
   }
-  if (index.exports.length > 0) {
-    observations.push(`exports: ${index.exports.join(", ")}`);
-  }
-  if (index.todos.length > 0) {
-    observations.push(`open TODOs: ${index.todos.join(" | ")}`);
-  }
+
+  // Comprimă și stochează conținutul binar
+  const blob = compress(source);
+  stmts.upsertFile.run(
+    index.module,
+    blob,
+    fileHash,
+    Buffer.byteLength(source, "utf-8"),
+    blob.byteLength,
+    index.language
+  );
+
+  // Index structural în entities (compact, pentru recall)
+  const observations: string[] = [];
+  if (index.description) observations.push(`description: ${index.description}`);
+  if (index.exports.length > 0) observations.push(`exports: ${index.exports.join(", ")}`);
+  if (index.todos.length > 0) observations.push(`TODOs: ${index.todos.join(" | ")}`);
   observations.push(`language: ${index.language}`);
 
-  if (observations.length === 0) return [];
-
-  if (existing) {
-    stmts.updateEntity.run(JSON.stringify(observations), existing.id as number);
+  const entityRow = stmts.getEntityByName.get(index.module);
+  if (entityRow) {
+    stmts.updateEntity.run(JSON.stringify(observations), entityRow.id as number);
   } else {
     stmts.insertEntity.run(index.module, "pattern", JSON.stringify(observations));
   }
 
-  return observations;
+  const savedBytes = Buffer.byteLength(source, "utf-8") - blob.byteLength;
+  return { observations, stored: true, savedBytes };
 }

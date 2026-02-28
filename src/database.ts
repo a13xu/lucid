@@ -86,6 +86,20 @@ function createSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_relations_from ON relations(from_entity);
     CREATE INDEX IF NOT EXISTS idx_relations_to   ON relations(to_entity);
     CREATE INDEX IF NOT EXISTS idx_entities_type  ON entities(type);
+
+    -- Conținut sursă comprimat (zlib deflate nivel 9)
+    CREATE TABLE IF NOT EXISTS file_contents (
+      id              INTEGER PRIMARY KEY,
+      filepath        TEXT NOT NULL UNIQUE,
+      content         BLOB NOT NULL,
+      content_hash    TEXT NOT NULL,
+      original_size   INTEGER NOT NULL,
+      compressed_size INTEGER NOT NULL,
+      language        TEXT NOT NULL DEFAULT 'generic',
+      indexed_at      INTEGER DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_fc_filepath ON file_contents(filepath);
+    CREATE INDEX IF NOT EXISTS idx_fc_hash     ON file_contents(content_hash);
   `);
 }
 
@@ -98,7 +112,25 @@ type Stmt<P extends unknown[], R> = Database.Statement<P, R>;
 // Pentru write-only (.run() only) — Row = unknown (nu contează)
 type WriteStmt<P extends unknown[]> = Database.Statement<P, unknown>;
 
+export interface FileContentRow {
+  id: number;
+  filepath: string;
+  content: Buffer;
+  content_hash: string;
+  original_size: number;
+  compressed_size: number;
+  language: string;
+  indexed_at: number;
+}
+
 export interface Statements {
+  // file_contents
+  getFileByPath:    Stmt<[string], FileContentRow>;
+  upsertFile:       WriteStmt<[string, Buffer, string, number, number, string]>;
+  getAllFiles:       Stmt<[], Pick<FileContentRow, "filepath" | "content" | "language" | "content_hash">>;
+  deleteFile:       WriteStmt<[string]>;
+  fileStorageStats: Stmt<[], { count: number; total_original: number; total_compressed: number }>;
+  // entities
   getEntityByName:     Stmt<[string], EntityRow>;
   insertEntity:        WriteStmt<[string, string, string]>;
   // 2 params: observations(string), id(number)
@@ -117,6 +149,36 @@ export interface Statements {
 
 export function prepareStatements(db: Database.Database): Statements {
   return {
+    // file_contents
+    getFileByPath: db.prepare<[string], FileContentRow>(
+      "SELECT * FROM file_contents WHERE filepath = ?"
+    ),
+
+    upsertFile: db.prepare<[string, Buffer, string, number, number, string], unknown>(
+      `INSERT INTO file_contents (filepath, content, content_hash, original_size, compressed_size, language)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(filepath) DO UPDATE SET
+         content = excluded.content,
+         content_hash = excluded.content_hash,
+         original_size = excluded.original_size,
+         compressed_size = excluded.compressed_size,
+         language = excluded.language,
+         indexed_at = unixepoch()`
+    ),
+
+    getAllFiles: db.prepare<[], Pick<FileContentRow, "filepath" | "content" | "language" | "content_hash">>(
+      "SELECT filepath, content, language, content_hash FROM file_contents"
+    ),
+
+    deleteFile: db.prepare<[string], unknown>(
+      "DELETE FROM file_contents WHERE filepath = ?"
+    ),
+
+    fileStorageStats: db.prepare<[], { count: number; total_original: number; total_compressed: number }>(
+      "SELECT COUNT(*) as count, SUM(original_size) as total_original, SUM(compressed_size) as total_compressed FROM file_contents"
+    ),
+
+    // entities
     getEntityByName: db.prepare<[string], EntityRow>(
       "SELECT * FROM entities WHERE name = ? COLLATE NOCASE"
     ),
