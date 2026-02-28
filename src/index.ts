@@ -19,6 +19,7 @@ import {
   handleCheckDrift, CheckDriftSchema,
   handleGetChecklist,
 } from "./tools/guardian.js";
+import { handleInitProject, InitProjectSchema } from "./tools/init.js";
 
 // ---------------------------------------------------------------------------
 // Init DB
@@ -107,6 +108,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       description: "Get memory usage statistics.",
       inputSchema: { type: "object", properties: {} },
     },
+    // ── Init / Indexing ──────────────────────────────────────────────────────
+    {
+      name: "init_project",
+      description:
+        "Scan and index a project directory into the knowledge graph. " +
+        "Reads CLAUDE.md (directives, conventions), package.json / pyproject.toml (dependencies, scripts), " +
+        "README.md (description), .mcp.json (MCP servers), logic-guardian.yaml (drift patterns), " +
+        "and source files (exported functions/classes). " +
+        "Call this once when starting work on a project to bootstrap memory with project context.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          directory: {
+            type: "string",
+            description: "Absolute path to the project root. Defaults to current working directory.",
+          },
+        },
+      },
+    },
     // ── Logic Guardian ───────────────────────────────────────────────────────
     {
       name: "validate_file",
@@ -168,6 +188,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "recall_all":  text = recallAll(db, stmts); break;
       case "forget":      text = forget(stmts, ForgetSchema.parse(args)); break;
       case "memory_stats": text = memoryStats(db, stmts); break;
+
+      // Init
+      case "init_project":  text = handleInitProject(stmts, InitProjectSchema.parse(args)); break;
 
       // Logic Guardian
       case "validate_file": text = handleValidateFile(ValidateFileSchema.parse(args)); break;
