@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import type { SecurityConfig } from "./security/guard.js";
 
 export interface LucidConfig {
   /** Only index/return files from these directories (e.g. ["src", "lib", "backend"]) */
@@ -12,6 +13,8 @@ export interface LucidConfig {
   maxContextTokens?: number;
   /** "Recently touched" = modified within N hours (default 24) */
   recentWindowHours?: number;
+  /** Security guard configuration */
+  security?: SecurityConfig;
   /** Optional Qdrant vector search (falls back to TF-IDF if not configured) */
   qdrant?: {
     url: string;           // e.g. "http://localhost:6333"

@@ -3,6 +3,7 @@
 // Falls back silently to TF-IDF when unavailable
 
 import type { ResolvedConfig } from "../config.js";
+import { safeFetch } from "../security/ssrf.js";
 
 type QdrantCfg = NonNullable<ResolvedConfig["qdrant"]>;
 
@@ -24,7 +25,7 @@ async function embed(texts: string[], cfg: QdrantCfg): Promise<number[][]> {
   }
 
   const url = cfg.embeddingUrl ?? "https://api.openai.com/v1/embeddings";
-  const res = await fetch(url, {
+  const res = await safeFetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -56,7 +57,7 @@ async function qdrantRequest(
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (cfg.apiKey) headers["api-key"] = cfg.apiKey;
 
-  const res = await fetch(url, {
+  const res = await safeFetch(url, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,

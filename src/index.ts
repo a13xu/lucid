@@ -8,6 +8,9 @@ import {
 import { z } from "zod";
 
 import { initDatabase, prepareStatements } from "./database.js";
+import { guardRequest, guardOutput, configureGuard } from "./security/guard.js";
+import { allowHost } from "./security/ssrf.js";
+import { loadConfig } from "./config.js";
 import { remember, RememberSchema } from "./tools/remember.js";
 import { relate, RelateSchema } from "./tools/relate.js";
 import { recall, RecallSchema } from "./tools/recall.js";
@@ -36,6 +39,26 @@ import {
 
 const db = initDatabase();
 const stmts = prepareStatements(db);
+
+// ---------------------------------------------------------------------------
+// Security guard — initialize from config + env
+// ---------------------------------------------------------------------------
+
+const _appCfg = loadConfig();
+configureGuard(_appCfg.security ?? {});
+
+// Register Qdrant host in SSRF allowlist if configured
+const _qdrantUrl = process.env["QDRANT_URL"] ?? _appCfg.qdrant?.url;
+if (_qdrantUrl) {
+  try { allowHost(_qdrantUrl); } catch { /* ignore invalid URL */ }
+}
+const _embeddingUrl = process.env["EMBEDDING_URL"] ?? _appCfg.qdrant?.embeddingUrl;
+if (_embeddingUrl) {
+  try { allowHost(_embeddingUrl); } catch { /* ignore */ }
+} else {
+  // Default embedding endpoint
+  allowHost("https://api.openai.com");
+}
 
 // ---------------------------------------------------------------------------
 // MCP Server
@@ -269,6 +292,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
+  // Security: rate limit + WAF check before any execution
+  const guard = guardRequest(name, args);
+  if (guard.blocked) {
+    return { content: [{ type: "text", text: guard.reason ?? "Request blocked by security guard" }], isError: true };
+  }
+
   try {
     let text: string;
 
@@ -302,7 +331,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
     }
 
-    return { content: [{ type: "text", text }] };
+    // Security: scan output for sensitive data leakage
+    return { content: [{ type: "text", text: guardOutput(name, text) }] };
   } catch (err) {
     const message = err instanceof z.ZodError
       ? `Validation error: ${err.errors.map((e) => e.message).join(", ")}`
