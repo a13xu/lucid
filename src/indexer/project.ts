@@ -217,10 +217,11 @@ function indexLogicGuardianYaml(path: string, stmts: Statements, results: IndexR
 
 // Source file indexing — extrage exporturi, clase, funcții principale
 const SOURCE_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rs"]);
-const SKIP_DIRS = new Set(["node_modules", ".git", "build", "dist", "__pycache__", ".next", "venv", ".venv", "target"]);
-const MAX_SOURCE_FILES = 30;
+const SKIP_DIRS = new Set(["node_modules", ".git", "build", "dist", "__pycache__", ".next", "venv", ".venv", "target", ".cache", "coverage", ".nyc_output"]);
+const MAX_SOURCE_FILES = 200;
+const MAX_DEPTH = 8;
 
-function indexSourceFile(filepath: string, projectName: string, stmts: Statements): string[] {
+function indexSourceFile(filepath: string, rootDir: string, projectName: string, stmts: Statements): string[] {
   const content = readFile(filepath);
   if (!content) return [];
 
@@ -243,21 +244,20 @@ function indexSourceFile(filepath: string, projectName: string, stmts: Statement
 
   if (exports.length === 0) return [];
 
-  const relPath = filepath.replace(/\\/g, "/").split("/src/")[1] ?? basename(filepath);
+  // Cale relativă față de rădăcina proiectului
+  const relPath = filepath.replace(/\\/g, "/").replace(rootDir.replace(/\\/g, "/") + "/", "");
   const obs = [`exports from ${relPath}: ${exports.slice(0, 10).join(", ")}`];
   upsert(stmts, projectName, "project", obs);
   return exports;
 }
 
 function scanSources(dir: string, projectName: string, stmts: Statements, results: IndexResult[]): void {
-  const srcDir = join(dir, "src");
-  const scanDir = existsSync(srcDir) ? srcDir : dir;
-
+  const rootDir = dir.replace(/\\/g, "/");
   let fileCount = 0;
   const exportedSymbols: string[] = [];
 
   function walk(d: string, depth: number): void {
-    if (depth > 3 || fileCount >= MAX_SOURCE_FILES) return;
+    if (depth > MAX_DEPTH || fileCount >= MAX_SOURCE_FILES) return;
     let entries: string[];
     try {
       entries = readdirSync(d);
@@ -267,18 +267,24 @@ function scanSources(dir: string, projectName: string, stmts: Statements, result
     for (const entry of entries) {
       if (SKIP_DIRS.has(entry)) continue;
       const full = join(d, entry);
-      const stat = statSync(full);
+      let stat;
+      try {
+        stat = statSync(full);
+      } catch {
+        continue;
+      }
       if (stat.isDirectory()) {
         walk(full, depth + 1);
-      } else if (SOURCE_EXTS.has(extname(entry))) {
-        const syms = indexSourceFile(full, projectName, stmts);
+      } else if (SOURCE_EXTS.has(extname(entry).toLowerCase())) {
+        const syms = indexSourceFile(full, rootDir, projectName, stmts);
         exportedSymbols.push(...syms);
         fileCount++;
+        if (fileCount >= MAX_SOURCE_FILES) return;
       }
     }
   }
 
-  walk(scanDir, 0);
+  walk(dir, 0);
 
   if (fileCount > 0) {
     results.push({
