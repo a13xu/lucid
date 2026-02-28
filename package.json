@@ -1,14 +1,39 @@
 {
-  "name": "lucid",
+  "name": "@a13xu/lucid",
   "version": "1.0.0",
-  "description": "Lucid — MCP Memory Server cu SQLite + FTS5 pentru Claude Code",
+  "description": "Persistent memory for Claude Code agents — SQLite + FTS5 knowledge graph via MCP",
   "type": "module",
   "bin": {
     "lucid": "./build/index.js"
   },
+  "files": [
+    "build/**/*.js",
+    "build/**/*.d.ts",
+    "README.md"
+  ],
   "scripts": {
-    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
-    "dev": "tsc --watch"
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "claude",
+    "claude-code",
+    "memory",
+    "sqlite",
+    "knowledge-graph",
+    "ai",
+    "anthropic"
+  ],
+  "author": "a13xu",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/a13xu/lucid.git"
+  },
+  "homepage": "https://github.com/a13xu/lucid#readme",
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

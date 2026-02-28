@@ -1,0 +1,7 @@
+src/
+tsconfig.json
+.mcp.json
+*.db
+*.db-wal
+*.db-shm
+.env
