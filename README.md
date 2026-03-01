@@ -1,8 +1,14 @@
 # @a13xu/lucid
 
+[![npm version](https://img.shields.io/npm/v/@a13xu/lucid)](https://www.npmjs.com/package/@a13xu/lucid)
+[![npm downloads](https://img.shields.io/npm/dm/@a13xu/lucid)](https://www.npmjs.com/package/@a13xu/lucid)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+> **MCP server for Claude Code** — persistent memory, smart code indexing, and code quality validation. Works out of the box with zero configuration.
+
 Token-efficient memory, code indexing, and validation for Claude Code agents — backed by **SQLite + FTS5**.
 
-Stores a persistent knowledge graph (entities, relations, observations), indexes source files as compressed binary with change detection, retrieves minimal relevant context via TF-IDF or Qdrant, and validates code for LLM drift patterns.
+Stores a persistent knowledge graph (entities, relations, observations), indexes source files as compressed binary with change detection, retrieves minimal relevant context via TF-IDF or Qdrant, and validates code for LLM drift patterns. Supports TypeScript, JavaScript, Python, **Vue, Nuxt**.
 
 ## Install
 
@@ -225,6 +231,15 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},
 ```
 
 In Claude Code: run `/mcp` — you should see `lucid` with 20 tools.
+
+## Contributing
+
+Bug reports and pull requests are welcome on [GitHub](https://github.com/a13xu/lucid).
+
+1. Fork the repo
+2. `npm install` → `npm run build`
+3. Test locally: `claude mcp add --transport stdio lucid-dev -- node /path/to/lucid/build/index.js`
+4. Open a PR
 
 ## Tech stack
 
