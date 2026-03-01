@@ -74,7 +74,7 @@ if (_embeddingUrl) {
 // ---------------------------------------------------------------------------
 
 const server = new Server(
-  { name: "lucid", version: "1.9.3" },
+  { name: "lucid", version: "1.9.4" },
   { capabilities: { tools: {} } }
 );
 
@@ -208,7 +208,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: "object",
         properties: {
           pattern:  { type: "string", description: "Regex pattern to search for." },
-          language: { type: "string", enum: ["python", "javascript", "typescript", "generic"], description: "Filter by language." },
+          language: { type: "string", enum: ["python", "javascript", "typescript", "vue", "generic"], description: "Filter by language." },
           context:  { type: "number", description: "Lines of context before/after each match (0-10, default 2)." },
         },
         required: ["pattern"],

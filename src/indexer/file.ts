@@ -59,6 +59,43 @@ function extractPython(source: string): Pick<FileIndex, "exports" | "description
   return { exports, description, todos };
 }
 
+function extractVue(source: string): Pick<FileIndex, "exports" | "description" | "todos"> {
+  const exports: string[] = [];
+  const todos: string[] = [];
+
+  // Extract <script> or <script setup> block
+  const scriptMatch = source.match(/<script[^>]*>([\s\S]*?)<\/script>/);
+  const scriptContent = scriptMatch?.[1] ?? "";
+
+  // defineExpose({ foo, bar }) — symbols available to parent components
+  const exposeMatch = scriptContent.match(/defineExpose\(\s*\{([^}]+)\}/);
+  if (exposeMatch) {
+    for (const m of exposeMatch[1]!.matchAll(/\b([a-zA-Z_]\w*)\b/g)) {
+      if (!["true", "false", "null", "undefined"].includes(m[1]!)) {
+        exports.push(m[1]!);
+      }
+    }
+  }
+
+  // Regular named exports inside <script> (non-setup composables, types, etc.)
+  for (const m of scriptContent.matchAll(/export\s+(?:async\s+)?(?:function|class|const|type|interface|enum)\s+(\w+)/g)) {
+    exports.push(m[1]!);
+  }
+
+  // TODOs from entire SFC (template + script + style)
+  for (const m of source.matchAll(/\/\/\s*(TODO|FIXME|HACK)[:\s]+(.+)/gi)) {
+    todos.push(`${m[1]}: ${m[2]!.trim()}`);
+  }
+
+  // Description: first HTML comment, then first JSDoc in script
+  const htmlComment = source.match(/<!--\s*([\s\S]*?)\s*-->/)?.[1] ?? "";
+  const jsdoc = scriptContent.match(/^\/\*\*([\s\S]*?)\*\//m)?.[1] ?? "";
+  const raw = htmlComment || jsdoc;
+  const description = raw.replace(/\s*\*\s*/g, " ").trim().slice(0, 200);
+
+  return { exports, description, todos };
+}
+
 function extractGeneric(source: string): Pick<FileIndex, "exports" | "description" | "todos"> {
   const todos: string[] = [];
   for (const m of source.matchAll(/(?:\/\/|#)\s*(TODO|FIXME|HACK)[:\s]+(.+)/gi)) {
@@ -87,6 +124,9 @@ export function indexFile(filepath: string): FileIndex | null {
   } else if (ext === ".py") {
     extracted = extractPython(source);
     language = "python";
+  } else if (ext === ".vue") {
+    extracted = extractVue(source);
+    language = "vue";
   } else {
     extracted = extractGeneric(source);
     language = "generic";

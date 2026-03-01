@@ -215,9 +215,55 @@ function indexLogicGuardianYaml(path: string, stmts: Statements, results: IndexR
   }
 }
 
+function indexNuxtConfig(path: string, projectName: string, stmts: Statements, results: IndexResult[]): void {
+  const content = readFile(path);
+  if (!content) return;
+
+  const obs: string[] = [`nuxt config: ${basename(path)}`];
+
+  // Modules list: modules: ['@nuxtjs/...', ...]
+  const modulesMatch = content.match(/modules\s*:\s*\[([^\]]+)\]/);
+  if (modulesMatch) {
+    const modules = [...modulesMatch[1].matchAll(/['"`](@?[\w/@-]+)['"`]/g)].map((m) => m[1]);
+    if (modules.length > 0) obs.push(`nuxt modules: ${modules.join(", ")}`);
+  }
+
+  // extends (Nuxt layers)
+  const extendsMatch = content.match(/extends\s*:\s*\[?['"`]([^'"`]+)['"`]/);
+  if (extendsMatch) obs.push(`extends layer: ${extendsMatch[1]}`);
+
+  // ssr setting
+  const ssrMatch = content.match(/ssr\s*:\s*(true|false)/);
+  if (ssrMatch) obs.push(`ssr: ${ssrMatch[1]}`);
+
+  // runtimeConfig public keys
+  const rtMatch = content.match(/runtimeConfig\s*:\s*\{([\s\S]*?)(?=\n\s{0,4}\w|\n\})/);
+  if (rtMatch) {
+    const keys = [...rtMatch[1].matchAll(/^\s{2,}(\w+)\s*:/gm)].map((m) => m[1]);
+    if (keys.length > 0) obs.push(`runtimeConfig keys: ${keys.slice(0, 10).join(", ")}`);
+  }
+
+  upsert(stmts, projectName, "project", obs);
+  results.push({ entity: projectName, type: "project", observations: obs.length, source: basename(path) });
+}
+
 // Source file indexing — extrage exporturi, clase, funcții principale
-const SOURCE_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rs"]);
-const SKIP_DIRS = new Set(["node_modules", ".git", "build", "dist", "__pycache__", ".next", "venv", ".venv", "target", ".cache", "coverage", ".nyc_output"]);
+const SOURCE_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".vue", ".py", ".go", ".rs"]);
+const SKIP_DIRS = new Set([
+  "node_modules", ".git",
+  // Generic build output
+  "build", "dist",
+  // Python
+  "__pycache__", "venv", ".venv",
+  // Rust
+  "target",
+  // Next.js
+  ".next",
+  // Nuxt
+  ".nuxt", ".output",
+  // General
+  ".cache", "coverage", ".nyc_output",
+]);
 const MAX_SOURCE_FILES = 10_000;
 
 function indexSourceFile(filepath: string, rootDir: string, projectName: string, stmts: Statements): string[] {
@@ -238,6 +284,28 @@ function indexSourceFile(filepath: string, rootDir: string, projectName: string,
   if (lang === ".py") {
     for (const m of content.matchAll(/^(?:def|class|async def)\s+(\w+)/gm)) {
       if (!m[1]!.startsWith("_")) exports.push(m[1]!);
+    }
+  }
+
+  // Vue SFC — extract component name + defineExpose + named exports from <script>
+  if (lang === ".vue") {
+    // Component name from filename (always present)
+    exports.push(basename(filepath, ".vue"));
+
+    const scriptMatch = content.match(/<script[^>]*>([\s\S]*?)<\/script>/);
+    if (scriptMatch) {
+      const sc = scriptMatch[1]!;
+      // defineExpose({ foo, bar }) — what the component exposes to parents via template refs
+      const exposeMatch = sc.match(/defineExpose\(\s*\{([^}]+)\}/);
+      if (exposeMatch) {
+        for (const m of exposeMatch[1]!.matchAll(/\b([a-zA-Z_]\w*)\b/g)) {
+          if (!["true", "false", "null", "undefined"].includes(m[1]!)) exports.push(m[1]!);
+        }
+      }
+      // Named exports (composables, types re-exported from SFC)
+      for (const m of sc.matchAll(/export\s+(?:async\s+)?(?:function|class|const|type|interface)\s+(\w+)/g)) {
+        exports.push(m[1]!);
+      }
     }
   }
 
@@ -357,7 +425,23 @@ export function indexProject(directory: string, stmts: Statements): IndexResult[
     indexLogicGuardianYaml(join(dir, "logic-guardian.yaml"), stmts, results);
   }
 
-  // 7. Surse
+  // 7. Nuxt config files (nuxt.config.ts/.js, app.config.ts)
+  for (const p of ["nuxt.config.ts", "nuxt.config.js", "nuxt.config.mts"]) {
+    const full = join(dir, p);
+    if (existsSync(full)) {
+      indexNuxtConfig(full, projectName, stmts, results);
+      break;
+    }
+  }
+  for (const p of ["app.config.ts", "app.config.js"]) {
+    const full = join(dir, p);
+    if (existsSync(full)) {
+      indexNuxtConfig(full, projectName, stmts, results);
+      break;
+    }
+  }
+
+  // 8. Surse
   scanSources(dir, projectName, stmts, results);
 
   return results;

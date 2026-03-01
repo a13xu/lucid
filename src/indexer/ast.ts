@@ -131,6 +131,35 @@ function skeletonPython(source: string): Skeleton {
 }
 
 // ---------------------------------------------------------------------------
+// Vue SFC
+// ---------------------------------------------------------------------------
+
+function skeletonVue(source: string): Skeleton {
+  // Extract <script> or <script setup> block and run TS skeleton on it
+  const scriptMatch = source.match(/<script[^>]*>([\s\S]*?)<\/script>/);
+  const sk = scriptMatch ? skeletonTS(scriptMatch[1]!) : { imports: [], exports: [], todos: [], summary: "" };
+
+  // Prepend Vue macro signatures (defineProps, defineEmits, defineExpose)
+  const scriptContent = scriptMatch?.[1] ?? "";
+  for (const macro of ["defineProps", "defineEmits", "defineExpose"]) {
+    const m = scriptContent.match(new RegExp(`${macro}[\\s\\S]*?(?=\\n\\n|\\n[^\\s]|$)`, "m"));
+    if (m) sk.exports.unshift(m[0]!.split("\n")[0]!.slice(0, 120));
+  }
+
+  // HTML comment as summary fallback
+  if (!sk.summary) {
+    const htmlComment = source.match(/<!--\s*([\s\S]*?)\s*-->/)?.[1];
+    if (htmlComment) sk.summary = htmlComment.replace(/\n/g, " ").trim().slice(0, 150);
+  }
+
+  // Also note top-level template structure (first tag inside <template>)
+  const templateMatch = source.match(/<template[^>]*>\s*<(\w[\w-]*)/);
+  if (templateMatch) sk.exports.unshift(`<template> root: <${templateMatch[1]}>`);
+
+  return sk;
+}
+
+// ---------------------------------------------------------------------------
 // Generic (markdown, yaml, json, etc.)
 // ---------------------------------------------------------------------------
 
@@ -163,6 +192,8 @@ export function extractSkeleton(source: string, language: string): Skeleton {
       return skeletonTS(source);
     case "python":
       return skeletonPython(source);
+    case "vue":
+      return skeletonVue(source);
     default:
       return skeletonGeneric(source);
   }
