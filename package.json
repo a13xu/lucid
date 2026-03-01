@@ -1,6 +1,6 @@
 {
   "name": "@a13xu/lucid",
-  "version": "1.9.2",
+  "version": "1.9.3",
   "description": "Token-efficient memory, code indexing, and validation for Claude Code agents — SQLite + FTS5, TF-IDF + Qdrant retrieval, AST skeleton pruning, diff-aware context, Logic Guardian drift detection",
   "type": "module",
   "bin": {
@@ -44,12 +44,12 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "better-sqlite3": "^11.0.0",
+    "better-sqlite3": "^12.0.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
-    "@types/node": "^20.0.0",
+    "@types/node": "^22.0.0",
     "typescript": "^5.4.0"
   }
 }

@@ -74,7 +74,7 @@ if (_embeddingUrl) {
 // ---------------------------------------------------------------------------
 
 const server = new Server(
-  { name: "lucid", version: "1.9.2" },
+  { name: "lucid", version: "1.9.3" },
   { capabilities: { tools: {} } }
 );
 
