@@ -42,10 +42,10 @@ export type InitProjectInput = z.infer<typeof InitProjectSchema>;
 // Instalează PostToolUse hook în .claude/settings.json
 // ---------------------------------------------------------------------------
 
-// New hook format (Claude Code ≥ 2025):
-// { "matcher": { "tools": ["Write", "Edit"] }, "hooks": [{ "type": "command", "command": "..." }] }
+// Hook format (Claude Code latest): matcher is a regex string, hooks is an array
+// { "matcher": "Write|Edit|NotebookEdit", "hooks": [{ "type": "command", "command": "..." }] }
 interface HookEntry {
-  matcher?: { tools?: string[] } | string;
+  matcher?: string;
   hooks?: Array<{ type: string; command: string }>;
   // old format (for detection only)
   command?: string;
@@ -54,7 +54,7 @@ interface HookEntry {
 const LUCID_MARKER = "Lucid: call sync_file";
 
 const LUCID_HOOK: HookEntry = {
-  matcher: { tools: ["Write", "Edit", "NotebookEdit"] },
+  matcher: "Write|Edit|NotebookEdit",
   hooks: [
     {
       type: "command",
