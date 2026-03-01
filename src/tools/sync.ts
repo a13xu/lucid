@@ -6,6 +6,7 @@ import { indexFile, upsertFileIndex } from "../indexer/file.js";
 import { indexProject, type IndexResult } from "../indexer/project.js";
 import { computeDiff } from "../retrieval/context.js";
 import { decompress } from "../store/content.js";
+import { implicitRewardFromSync } from "../memory/experience.js";
 
 const SUPPORTED_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rs"]);
 
@@ -56,6 +57,10 @@ export function handleSyncFile(stmts: Statements, args: z.infer<typeof SyncFileS
   ];
   if (index.description) lines.push(`   description: ${index.description}`);
   if (index.todos.length > 0) lines.push(`   TODOs: ${index.todos.length} open`);
+
+  // Implicit reward: if this file was in the last get_context result → +0.3
+  const implicitRewarded = implicitRewardFromSync(filepath, stmts);
+  if (implicitRewarded) lines.push(`   🎯 Implicit reward +0.3 (file was in recent context)`);
 
   return lines.join("\n");
 }

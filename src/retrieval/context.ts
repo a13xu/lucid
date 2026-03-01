@@ -8,6 +8,7 @@ import { searchQdrant } from "./qdrant.js";
 import type { Statements, FileContentRow } from "../database.js";
 import type { ResolvedConfig } from "../config.js";
 import { getQdrantConfig } from "../config.js";
+import { getFileRewardsMap } from "../memory/experience.js";
 
 // ---------------------------------------------------------------------------
 // Token estimation (1 token ≈ 4 chars is the standard heuristic)
@@ -167,6 +168,9 @@ export async function assembleContext(
   let strategy: ContextResult["strategy"] = "tfidf";
   let ranked: typeof decompressed;
 
+  // Load experience-based rewards for ranking boost (decayed, normalized to +0.25 max)
+  const fileRewards = getFileRewardsMap(stmts);
+
   const qdrantCfg = getQdrantConfig(cfg);
 
   if (qdrantCfg && !opts.recentOnly) {
@@ -181,21 +185,21 @@ export async function assembleContext(
         for (const c of chunks) {
           if (!seen.has(c.filepath)) { seen.add(c.filepath); qdrantOrder.push(c.filepath); }
         }
-        // Place Qdrant matches first, then remaining by TF-IDF
+        // Place Qdrant matches first, then remaining by TF-IDF + reward boost
         const tfidfRanked = rankByRelevance(query, decompressed);
         const tfidfOrder = tfidfRanked.map((s) => s.filepath).filter((fp) => !seen.has(fp));
         const orderedFps = [...qdrantOrder, ...tfidfOrder];
         const fpToDoc = new Map(decompressed.map((d) => [d.filepath, d]));
         ranked = orderedFps.map((fp) => fpToDoc.get(fp)!).filter(Boolean);
       } else {
-        ranked = rankAndBoost(query, decompressed, recentSet);
+        ranked = rankAndBoost(query, decompressed, recentSet, fileRewards);
       }
     } catch {
       // Qdrant unreachable — fall back to TF-IDF
-      ranked = rankAndBoost(query, decompressed, recentSet);
+      ranked = rankAndBoost(query, decompressed, recentSet, fileRewards);
     }
   } else {
-    ranked = rankAndBoost(query, decompressed, recentSet);
+    ranked = rankAndBoost(query, decompressed, recentSet, fileRewards);
     if (opts.recentOnly) strategy = "recent";
   }
 
@@ -258,14 +262,22 @@ export async function assembleContext(
 function rankAndBoost<T extends { filepath: string; text: string; indexedAt: number }>(
   query: string,
   docs: T[],
-  recentSet: Set<string>
+  recentSet: Set<string>,
+  fileRewards?: Map<string, number>
 ): T[] {
   const scored = rankByRelevance(query, docs);
   const scoreMap = new Map(scored.map((s) => [s.filepath, s.score]));
 
+  // Compute normalizer for experience boost (max 0.25, avoids dominating TF-IDF)
+  const maxReward = fileRewards && fileRewards.size > 0
+    ? Math.max(...fileRewards.values())
+    : 0;
+
   return [...docs].sort((a, b) => {
-    const sA = (scoreMap.get(a.filepath) ?? 0) + (recentSet.has(a.filepath) ? 0.3 : 0);
-    const sB = (scoreMap.get(b.filepath) ?? 0) + (recentSet.has(b.filepath) ? 0.3 : 0);
+    const rewardBoostA = maxReward > 0 ? ((fileRewards!.get(a.filepath) ?? 0) / maxReward) * 0.25 : 0;
+    const rewardBoostB = maxReward > 0 ? ((fileRewards!.get(b.filepath) ?? 0) / maxReward) * 0.25 : 0;
+    const sA = (scoreMap.get(a.filepath) ?? 0) + (recentSet.has(a.filepath) ? 0.3 : 0) + rewardBoostA;
+    const sB = (scoreMap.get(b.filepath) ?? 0) + (recentSet.has(b.filepath) ? 0.3 : 0) + rewardBoostB;
     return sB - sA;
   });
 }

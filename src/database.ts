@@ -110,6 +110,47 @@ function createSchema(db: Database.Database): void {
       changed_at  INTEGER DEFAULT (unixepoch())
     );
     CREATE INDEX IF NOT EXISTS idx_fd_changed ON file_diffs(changed_at);
+
+    -- Experiences: logged get_context calls for RL reward system
+    CREATE TABLE IF NOT EXISTS experiences (
+      id          INTEGER PRIMARY KEY,
+      query       TEXT NOT NULL,
+      query_terms TEXT NOT NULL DEFAULT '',
+      context_fps TEXT NOT NULL DEFAULT '[]',
+      strategy    TEXT NOT NULL DEFAULT 'tfidf',
+      reward      REAL NOT NULL DEFAULT 0.0,
+      feedback    TEXT,
+      created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+      rewarded_at INTEGER
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS experiences_fts USING fts5(
+      query,
+      feedback,
+      content='experiences',
+      content_rowid='id',
+      tokenize='porter unicode61'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS experiences_ai AFTER INSERT ON experiences BEGIN
+      INSERT INTO experiences_fts(rowid, query, feedback)
+      VALUES (new.id, new.query, COALESCE(new.feedback, ''));
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS experiences_au AFTER UPDATE ON experiences BEGIN
+      INSERT INTO experiences_fts(experiences_fts, rowid, query, feedback)
+      VALUES('delete', old.id, old.query, COALESCE(old.feedback, ''));
+      INSERT INTO experiences_fts(rowid, query, feedback)
+      VALUES (new.id, new.query, COALESCE(new.feedback, ''));
+    END;
+
+    -- Denormalized reward cache per file (updated on every reward/penalize/implicit)
+    CREATE TABLE IF NOT EXISTS file_rewards (
+      filepath      TEXT PRIMARY KEY,
+      total_reward  REAL NOT NULL DEFAULT 0.0,
+      use_count     INTEGER NOT NULL DEFAULT 0,
+      last_rewarded INTEGER
+    );
   `);
 }
 
@@ -140,6 +181,25 @@ export interface FileDiffRow {
   changed_at: number;
 }
 
+export interface ExperienceRow {
+  id: number;
+  query: string;
+  query_terms: string;
+  context_fps: string;  // JSON array of filepath strings
+  strategy: string;
+  reward: number;
+  feedback: string | null;
+  created_at: number;
+  rewarded_at: number | null;
+}
+
+export interface FileRewardRow {
+  filepath: string;
+  total_reward: number;
+  use_count: number;
+  last_rewarded: number | null;
+}
+
 export interface Statements {
   // file_contents
   getFileByPath:    Stmt<[string], FileContentRow>;
@@ -167,6 +227,16 @@ export interface Statements {
   countRelations:      Stmt<[], { count: number }>;
   getWalMode:          Stmt<[], { journal_mode: string }>;
   getAllRelations:      Stmt<[], RelationRow & { from_name: string; to_name: string }>;
+  // experiences (reward system)
+  insertExperience:       WriteStmt<[string, string, string, string]>;   // query, query_terms, context_fps, strategy
+  updateExperienceReward: WriteStmt<[number, string | null, number]>;    // delta, feedback|null, id
+  getExperienceById:      Stmt<[number], ExperienceRow>;
+  getTopExperiences:      Stmt<[number], ExperienceRow>;
+  searchExperiencesFTS:   Stmt<[string, number], ExperienceRow>;
+  // file_rewards
+  upsertFileReward:       WriteStmt<[string, number]>;                   // filepath, delta_reward
+  getFileRewards:         Stmt<[], FileRewardRow>;
+  getTopFileRewards:      Stmt<[number], FileRewardRow>;
 }
 
 export function prepareStatements(db: Database.Database): Statements {
@@ -287,6 +357,54 @@ export function prepareStatements(db: Database.Database): Statements {
        FROM relations r
        JOIN entities ef ON r.from_entity = ef.id
        JOIN entities et ON r.to_entity = et.id`
+    ),
+
+    // experiences
+    insertExperience: db.prepare<[string, string, string, string], unknown>(
+      `INSERT INTO experiences (query, query_terms, context_fps, strategy)
+       VALUES (?, ?, ?, ?)`
+    ),
+
+    updateExperienceReward: db.prepare<[number, string | null, number], unknown>(
+      `UPDATE experiences SET
+         reward = reward + ?,
+         rewarded_at = unixepoch(),
+         feedback = COALESCE(?, feedback)
+       WHERE id = ?`
+    ),
+
+    getExperienceById: db.prepare<[number], ExperienceRow>(
+      "SELECT * FROM experiences WHERE id = ?"
+    ),
+
+    getTopExperiences: db.prepare<[number], ExperienceRow>(
+      "SELECT * FROM experiences ORDER BY reward DESC LIMIT ?"
+    ),
+
+    searchExperiencesFTS: db.prepare<[string, number], ExperienceRow>(
+      `SELECT e.* FROM experiences_fts
+       JOIN experiences e ON experiences_fts.rowid = e.id
+       WHERE experiences_fts MATCH ?
+       ORDER BY rank
+       LIMIT ?`
+    ),
+
+    // file_rewards
+    upsertFileReward: db.prepare<[string, number], unknown>(
+      `INSERT INTO file_rewards (filepath, total_reward, use_count, last_rewarded)
+       VALUES (?, ?, 1, unixepoch())
+       ON CONFLICT(filepath) DO UPDATE SET
+         total_reward  = total_reward + excluded.total_reward,
+         use_count     = use_count + 1,
+         last_rewarded = unixepoch()`
+    ),
+
+    getFileRewards: db.prepare<[], FileRewardRow>(
+      "SELECT * FROM file_rewards"
+    ),
+
+    getTopFileRewards: db.prepare<[number], FileRewardRow>(
+      "SELECT * FROM file_rewards WHERE total_reward > 0 ORDER BY total_reward DESC LIMIT ?"
     ),
   };
 }

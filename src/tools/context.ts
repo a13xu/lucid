@@ -4,6 +4,7 @@ import { assembleContext } from "../retrieval/context.js";
 import { loadConfig } from "../config.js";
 import { decompress } from "../store/content.js";
 import { computeDiff } from "../retrieval/context.js";
+import { createExperience } from "../memory/experience.js";
 
 // ---------------------------------------------------------------------------
 // get_context — smart token-efficient context retrieval
@@ -48,9 +49,14 @@ export async function handleGetContext(
     ].join("\n");
   }
 
+  // Log experience for RL reward system
+  const contextFps = result.files.map((f) => f.filepath);
+  const expId = createExperience(args.query, contextFps, result.strategy, stmts);
+
   const lines: string[] = [
     `// get_context: "${args.query}"`,
     `// Strategy: ${result.strategy} | ${result.files.length} files | ~${result.totalTokens} tokens`,
+    `// Experience #${expId} logged. Call reward() if this context helped, penalize() if not.`,
     result.truncated ? `// ⚠️  Truncated (${result.skippedFiles} files skipped — increase maxTokens to see more)` : "",
     "",
   ].filter((l) => l !== undefined);

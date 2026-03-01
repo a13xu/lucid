@@ -32,6 +32,15 @@ import {
   handleGetContext, GetContextSchema,
   handleGetRecent, GetRecentSchema,
 } from "./tools/context.js";
+import {
+  handleReward, RewardSchema,
+  handlePenalize, PenalizeSchema,
+  handleShowRewards, ShowRewardsSchema,
+} from "./tools/reward.js";
+import {
+  handleGetCodingRules,
+  handleCheckCodeQuality, CheckCodeQualitySchema,
+} from "./tools/coding-guard.js";
 
 // ---------------------------------------------------------------------------
 // Init DB
@@ -65,7 +74,7 @@ if (_embeddingUrl) {
 // ---------------------------------------------------------------------------
 
 const server = new Server(
-  { name: "lucid", version: "1.5.0" },
+  { name: "lucid", version: "1.9.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -242,6 +251,47 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
+    // ── Reward System ────────────────────────────────────────────────────────
+    {
+      name: "reward",
+      description:
+        "Signal that the last get_context() result was helpful (+1 reward). " +
+        "The files returned in that context will be ranked higher in future similar queries. " +
+        "Call this after a get_context() result led to a correct fix or useful code.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          note: { type: "string", description: "Optional note about what worked (stored for future reference)" },
+        },
+      },
+    },
+    {
+      name: "penalize",
+      description:
+        "Signal that the last get_context() result was unhelpful (-1 reward). " +
+        "The files returned in that context will be ranked lower in future similar queries. " +
+        "Call this after a get_context() result missed important files or was irrelevant.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          note: { type: "string", description: "Optional note about what was missing or wrong" },
+        },
+      },
+    },
+    {
+      name: "show_rewards",
+      description:
+        "Show the top rewarded experiences and most rewarded files. " +
+        "Rewards decay exponentially (half-life ~14 days). " +
+        "Use this to understand which context queries and files have been most valuable.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Filter experiences by query text (optional)" },
+          topK: { type: "number", description: "Number of top results to show (default 10)" },
+        },
+      },
+    },
     // ── Logic Guardian ───────────────────────────────────────────────────────
     {
       name: "validate_file",
@@ -281,6 +331,36 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         "Get the full Logic Guardian validation checklist (5 passes). " +
         "Call this before marking any implementation task as done.",
       inputSchema: { type: "object", properties: {} },
+    },
+    // ── Coding Guard ─────────────────────────────────────────────────────────
+    {
+      name: "coding_rules",
+      description:
+        "Get the 25 Golden Rules coding checklist. Covers clarity, naming, single responsibility, " +
+        "error handling, frontend component size/reuse/props, singleton rules, library selection, " +
+        "and architecture separation. Review before marking any task done.",
+      inputSchema: { type: "object", properties: {} },
+    },
+    {
+      name: "check_code_quality",
+      description:
+        "Analyze a file or code snippet against the 25 Golden Rules. " +
+        "Detects: file/function size violations, vague naming, deep nesting, dead code, and — " +
+        "for React/Vue component files — inline styles, prop explosion, fetch-in-component, " +
+        "direct DOM access, mixed styling systems. " +
+        "Complements validate_file (which checks logic correctness).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Absolute or relative path to the file to analyze." },
+          code: { type: "string", description: "Code snippet to analyze inline." },
+          language: {
+            type: "string",
+            enum: ["python", "javascript", "typescript", "vue", "generic"],
+            description: "Language hint. Auto-detected from file extension if path is provided.",
+          },
+        },
+      },
     },
   ],
 }));
@@ -322,10 +402,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "get_context":   text = await handleGetContext(stmts, GetContextSchema.parse(args)); break;
       case "get_recent":    text = handleGetRecent(stmts, GetRecentSchema.parse(args)); break;
 
+      // Reward System
+      case "reward":        text = handleReward(stmts, RewardSchema.parse(args)); break;
+      case "penalize":      text = handlePenalize(stmts, PenalizeSchema.parse(args)); break;
+      case "show_rewards":  text = handleShowRewards(stmts, ShowRewardsSchema.parse(args)); break;
+
       // Logic Guardian
       case "validate_file": text = handleValidateFile(ValidateFileSchema.parse(args)); break;
       case "check_drift":   text = handleCheckDrift(CheckDriftSchema.parse(args)); break;
       case "get_checklist": text = handleGetChecklist(); break;
+
+      // Coding Guard
+      case "coding_rules":       text = handleGetCodingRules(); break;
+      case "check_code_quality": text = handleCheckCodeQuality(CheckCodeQualitySchema.parse(args)); break;
 
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
