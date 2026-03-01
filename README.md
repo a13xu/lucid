@@ -9,7 +9,11 @@ Stores a persistent knowledge graph (entities, relations, observations), indexes
 **Requirements:** Node.js 18+
 
 ```bash
-# Add to Claude Code (no install needed)
+# Option 1 — global install (recommended, faster startup)
+npm install -g @a13xu/lucid
+claude mcp add --transport stdio lucid -- lucid
+
+# Option 2 — no install needed (uses npx on each start)
 claude mcp add --transport stdio lucid -- npx -y @a13xu/lucid
 ```
 
@@ -43,7 +47,7 @@ Default DB path: `~/.claude/memory.db`
 6. "What do we know?"  → recall("query")          → knowledge graph search
 ```
 
-## Tools (15)
+## Tools (20)
 
 ### Memory
 | Tool | Description |
@@ -75,6 +79,19 @@ Default DB path: `~/.claude/memory.db`
 | `validate_file` | Detect LLM drift patterns in a source file: logic inversions, null propagation, type confusion, copy-paste drift, silent exceptions. Supports Python, JS, TS. |
 | `check_drift` | Analyze a code snippet inline without saving to disk. |
 | `get_checklist` | Return the full 5-pass validation protocol (Logic Trace, Contract Verification, Stupid Mistakes, Integration Sanity, Explain It). |
+
+### Reward system
+| Tool | Description |
+|---|---|
+| `reward` | Signal that the last `get_context()` result was helpful (+1). Rewarded files rank higher in future similar queries. |
+| `penalize` | Signal that the last `get_context()` result was unhelpful (-1). Penalized files rank lower in future queries. |
+| `show_rewards` | Show top rewarded experiences and most rewarded files. Rewards decay exponentially (half-life ~14 days). |
+
+### Code Quality Guard
+| Tool | Description |
+|---|---|
+| `coding_rules` | Get the 25 Golden Rules checklist — naming, single responsibility, file/function size, error handling, frontend component rules, architecture separation. |
+| `check_code_quality` | Analyze a file or snippet against the 25 Golden Rules. Detects file/function bloat, vague naming, deep nesting, dead code, and for React/Vue files: prop explosion, inline styles, fetch-in-component, direct DOM access. Complements `validate_file`. |
 
 ## Token optimization in depth
 
@@ -207,7 +224,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},
   | npx @a13xu/lucid
 ```
 
-In Claude Code: run `/mcp` — you should see `lucid` with 15 tools.
+In Claude Code: run `/mcp` — you should see `lucid` with 20 tools.
 
 ## Tech stack
 
