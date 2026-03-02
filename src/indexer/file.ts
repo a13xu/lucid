@@ -104,14 +104,8 @@ function extractGeneric(source: string): Pick<FileIndex, "exports" | "descriptio
   return { exports: [], description: "", todos };
 }
 
-export function indexFile(filepath: string): FileIndex | null {
-  let source: string;
-  try {
-    source = readFileSync(filepath, { encoding: "utf-8" });
-  } catch {
-    return null;
-  }
-
+/** Build a FileIndex from already-read source — no IO. */
+export function buildFileIndex(filepath: string, source: string): FileIndex {
   const ext = extname(filepath).toLowerCase();
   const module = filepath.replace(/\\/g, "/");
 
@@ -133,6 +127,16 @@ export function indexFile(filepath: string): FileIndex | null {
   }
 
   return { module, language, ...extracted };
+}
+
+export function indexFile(filepath: string): FileIndex | null {
+  let source: string;
+  try {
+    source = readFileSync(filepath, { encoding: "utf-8" });
+  } catch {
+    return null;
+  }
+  return buildFileIndex(filepath, source);
 }
 
 // ---------------------------------------------------------------------------

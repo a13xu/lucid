@@ -8,7 +8,7 @@ import { computeDiff } from "../retrieval/context.js";
 import { decompress } from "../store/content.js";
 import { implicitRewardFromSync } from "../memory/experience.js";
 
-const SUPPORTED_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".rs"]);
+const SUPPORTED_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".vue", ".py", ".go", ".rs"]);
 
 // ---------------------------------------------------------------------------
 // sync_file

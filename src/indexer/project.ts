@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { join, extname, basename } from "path";
 import type { Statements } from "../database.js";
+import { buildFileIndex, upsertFileIndex } from "./file.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -266,61 +267,30 @@ const SKIP_DIRS = new Set([
 ]);
 const MAX_SOURCE_FILES = 10_000;
 
-function indexSourceFile(filepath: string, rootDir: string, projectName: string, stmts: Statements): string[] {
+function indexSourceFile(filepath: string, rootDir: string, projectName: string, stmts: Statements): { exports: string[]; stored: boolean } {
   const content = readFile(filepath);
-  if (!content) return [];
+  if (!content) return { exports: [], stored: false };
 
-  const exports: string[] = [];
-  const lang = extname(filepath);
+  // Build structured index (language-aware, single read)
+  const fileIdx = buildFileIndex(filepath, content);
 
-  // TypeScript / JavaScript
-  if ([".ts", ".tsx", ".js", ".jsx"].includes(lang)) {
-    for (const m of content.matchAll(/export\s+(?:async\s+)?(?:function|class|const|type|interface)\s+(\w+)/g)) {
-      exports.push(m[1]!);
-    }
+  // Store compressed content in source file index → enables get_context() + grep_code()
+  const result = upsertFileIndex(fileIdx, content, stmts);
+
+  // Add exports to knowledge graph (for recall())
+  if (fileIdx.exports.length > 0) {
+    const relPath = filepath.replace(/\\/g, "/").replace(rootDir.replace(/\\/g, "/") + "/", "");
+    const obs = [`exports from ${relPath}: ${fileIdx.exports.slice(0, 10).join(", ")}`];
+    upsert(stmts, projectName, "project", obs);
   }
 
-  // Python
-  if (lang === ".py") {
-    for (const m of content.matchAll(/^(?:def|class|async def)\s+(\w+)/gm)) {
-      if (!m[1]!.startsWith("_")) exports.push(m[1]!);
-    }
-  }
-
-  // Vue SFC — extract component name + defineExpose + named exports from <script>
-  if (lang === ".vue") {
-    // Component name from filename (always present)
-    exports.push(basename(filepath, ".vue"));
-
-    const scriptMatch = content.match(/<script[^>]*>([\s\S]*?)<\/script>/);
-    if (scriptMatch) {
-      const sc = scriptMatch[1]!;
-      // defineExpose({ foo, bar }) — what the component exposes to parents via template refs
-      const exposeMatch = sc.match(/defineExpose\(\s*\{([^}]+)\}/);
-      if (exposeMatch) {
-        for (const m of exposeMatch[1]!.matchAll(/\b([a-zA-Z_]\w*)\b/g)) {
-          if (!["true", "false", "null", "undefined"].includes(m[1]!)) exports.push(m[1]!);
-        }
-      }
-      // Named exports (composables, types re-exported from SFC)
-      for (const m of sc.matchAll(/export\s+(?:async\s+)?(?:function|class|const|type|interface)\s+(\w+)/g)) {
-        exports.push(m[1]!);
-      }
-    }
-  }
-
-  if (exports.length === 0) return [];
-
-  // Cale relativă față de rădăcina proiectului
-  const relPath = filepath.replace(/\\/g, "/").replace(rootDir.replace(/\\/g, "/") + "/", "");
-  const obs = [`exports from ${relPath}: ${exports.slice(0, 10).join(", ")}`];
-  upsert(stmts, projectName, "project", obs);
-  return exports;
+  return { exports: fileIdx.exports, stored: result.stored };
 }
 
 function scanSources(dir: string, projectName: string, stmts: Statements, results: IndexResult[]): void {
   const rootDir = dir.replace(/\\/g, "/");
   let fileCount = 0;
+  let storedCount = 0;
   const exportedSymbols: string[] = [];
 
   function walk(d: string): void {
@@ -343,9 +313,10 @@ function scanSources(dir: string, projectName: string, stmts: Statements, result
       if (stat.isDirectory()) {
         walk(full);
       } else if (SOURCE_EXTS.has(extname(entry).toLowerCase())) {
-        const syms = indexSourceFile(full, rootDir, projectName, stmts);
+        const { exports: syms, stored } = indexSourceFile(full, rootDir, projectName, stmts);
         exportedSymbols.push(...syms);
         fileCount++;
+        if (stored) storedCount++;
         if (fileCount >= MAX_SOURCE_FILES) return;
       }
     }
@@ -358,7 +329,7 @@ function scanSources(dir: string, projectName: string, stmts: Statements, result
       entity: projectName,
       type: "project",
       observations: fileCount,
-      source: `${fileCount} source files (${exportedSymbols.length} exports)`,
+      source: `${fileCount} source files (${storedCount} compressed, ${exportedSymbols.length} exports)`,
     });
   }
 }
