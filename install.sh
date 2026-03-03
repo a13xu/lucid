@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
 # Lucid MCP Server — Installer
-# Usage: bash install.sh
+# Usage: bash install.sh  (Linux/macOS/Git Bash)
+#        .\install.ps1    (Windows PowerShell — rulat automat de pe Windows)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ---------------------------------------------------------------------------
+# Platform detection — pe Windows delegăm la install.ps1
+# ---------------------------------------------------------------------------
+OS="$(uname -s 2>/dev/null || echo unknown)"
+case "$OS" in
+  MINGW*|MSYS*|CYGWIN*)
+    echo "Windows detected (Git Bash / MSYS) — delegating to install.ps1..."
+    powershell -ExecutionPolicy Bypass -File "$SCRIPT_DIR/install.ps1"
+    exit $?
+    ;;
+esac
 
 echo ""
 echo "╔══════════════════════════════════════╗"
