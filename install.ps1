@@ -24,8 +24,9 @@ Write-Host ""
 # 1. Build MCP server
 # ---------------------------------------------------------------------------
 Write-Host "> Installing MCP server dependencies..."
+Write-Host "  (better-sqlite3 compileaza nativ -- poate dura 1-2 min, asteptati...)"
 Set-Location $ScriptDir
-npm install --silent
+npm install --no-fund --no-audit
 if ($LASTEXITCODE -ne 0) { Write-Error "npm install failed"; exit 1 }
 
 Write-Host "> Building MCP server..."
@@ -72,9 +73,10 @@ if (Prompt-YN "Install Web Dev Cycle Manager?" "N") {
     }
 
     Write-Host ""
-    Write-Host "> Installing web dependencies (better-sqlite3 compileaza nativ -- ~1-2 min)..."
+    Write-Host "> Installing web dependencies..."
+    Write-Host "  (better-sqlite3 + Vite compileaza -- poate dura 2-3 min, asteptati...)"
     Set-Location $WebDir
-    npm install
+    npm install --no-fund --no-audit
     if ($LASTEXITCODE -ne 0) { Write-Error "npm install (web) failed"; exit 1 }
     Write-Host "[OK] Web dependencies installed"
 

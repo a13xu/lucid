@@ -29,8 +29,9 @@ echo ""
 # 1. Build MCP server
 # ---------------------------------------------------------------------------
 echo "▶ Installing MCP server dependencies..."
+echo "  (better-sqlite3 compileaza nativ — poate dura 1-2 min, asteptati...)"
 cd "$SCRIPT_DIR"
-npm install --silent
+npm install --no-fund --no-audit
 echo "▶ Building MCP server..."
 npm run build
 echo "✅ MCP server built  →  build/index.js"
