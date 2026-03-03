@@ -151,6 +151,33 @@ function createSchema(db: Database.Database): void {
       use_count     INTEGER NOT NULL DEFAULT 0,
       last_rewarded INTEGER
     );
+
+    -- Planning tables
+    CREATE TABLE IF NOT EXISTS plans (
+      id          INTEGER PRIMARY KEY,
+      title       TEXT NOT NULL,
+      description TEXT NOT NULL,
+      user_story  TEXT NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'active',
+      created_at  INTEGER DEFAULT (unixepoch()),
+      updated_at  INTEGER DEFAULT (unixepoch())
+    );
+
+    CREATE TABLE IF NOT EXISTS plan_tasks (
+      id            INTEGER PRIMARY KEY,
+      plan_id       INTEGER NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+      seq           INTEGER NOT NULL,
+      title         TEXT NOT NULL,
+      description   TEXT NOT NULL,
+      test_criteria TEXT NOT NULL,
+      status        TEXT NOT NULL DEFAULT 'pending',
+      notes         TEXT NOT NULL DEFAULT '[]',
+      created_at    INTEGER DEFAULT (unixepoch()),
+      updated_at    INTEGER DEFAULT (unixepoch())
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_plan_tasks_plan ON plan_tasks(plan_id, seq);
+    CREATE INDEX IF NOT EXISTS idx_plans_status    ON plans(status);
   `);
 }
 
@@ -200,6 +227,29 @@ export interface FileRewardRow {
   last_rewarded: number | null;
 }
 
+export interface PlanRow {
+  id: number;
+  title: string;
+  description: string;
+  user_story: string;
+  status: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface PlanTaskRow {
+  id: number;
+  plan_id: number;
+  seq: number;
+  title: string;
+  description: string;
+  test_criteria: string;
+  status: string;
+  notes: string;  // JSON string
+  created_at: number;
+  updated_at: number;
+}
+
 export interface Statements {
   // file_contents
   getFileByPath:    Stmt<[string], FileContentRow>;
@@ -237,6 +287,17 @@ export interface Statements {
   upsertFileReward:       WriteStmt<[string, number]>;                   // filepath, delta_reward
   getFileRewards:         Stmt<[], FileRewardRow>;
   getTopFileRewards:      Stmt<[number], FileRewardRow>;
+  // plans
+  insertPlan:             WriteStmt<[string, string, string]>;            // title, description, user_story
+  getPlanById:            Stmt<[number], PlanRow>;
+  getAllPlans:             Stmt<[], PlanRow>;
+  updatePlanStatus:       WriteStmt<[string, number]>;                   // status, id
+  // plan_tasks
+  insertPlanTask:         WriteStmt<[number, number, string, string, string]>; // plan_id, seq, title, description, test_criteria
+  getTasksByPlanId:       Stmt<[number], PlanTaskRow>;
+  getTaskById:            Stmt<[number], PlanTaskRow>;
+  updateTaskStatus:       WriteStmt<[string, string, number]>;           // status, notes, id
+  countRemainingTasks:    Stmt<[number], { count: number }>;             // plan_id → tasks != 'done'
 }
 
 export function prepareStatements(db: Database.Database): Statements {
@@ -405,6 +466,44 @@ export function prepareStatements(db: Database.Database): Statements {
 
     getTopFileRewards: db.prepare<[number], FileRewardRow>(
       "SELECT * FROM file_rewards WHERE total_reward > 0 ORDER BY total_reward DESC LIMIT ?"
+    ),
+
+    // plans
+    insertPlan: db.prepare<[string, string, string], unknown>(
+      "INSERT INTO plans (title, description, user_story) VALUES (?, ?, ?)"
+    ),
+
+    getPlanById: db.prepare<[number], PlanRow>(
+      "SELECT * FROM plans WHERE id = ?"
+    ),
+
+    getAllPlans: db.prepare<[], PlanRow>(
+      "SELECT * FROM plans ORDER BY created_at DESC"
+    ),
+
+    updatePlanStatus: db.prepare<[string, number], unknown>(
+      "UPDATE plans SET status = ?, updated_at = unixepoch() WHERE id = ?"
+    ),
+
+    // plan_tasks
+    insertPlanTask: db.prepare<[number, number, string, string, string], unknown>(
+      "INSERT INTO plan_tasks (plan_id, seq, title, description, test_criteria) VALUES (?, ?, ?, ?, ?)"
+    ),
+
+    getTasksByPlanId: db.prepare<[number], PlanTaskRow>(
+      "SELECT * FROM plan_tasks WHERE plan_id = ? ORDER BY seq"
+    ),
+
+    getTaskById: db.prepare<[number], PlanTaskRow>(
+      "SELECT * FROM plan_tasks WHERE id = ?"
+    ),
+
+    updateTaskStatus: db.prepare<[string, string, number], unknown>(
+      "UPDATE plan_tasks SET status = ?, notes = ?, updated_at = unixepoch() WHERE id = ?"
+    ),
+
+    countRemainingTasks: db.prepare<[number], { count: number }>(
+      "SELECT COUNT(*) as count FROM plan_tasks WHERE plan_id = ? AND status != 'done'"
     ),
   };
 }

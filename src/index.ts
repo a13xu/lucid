@@ -41,6 +41,12 @@ import {
   handleGetCodingRules,
   handleCheckCodeQuality, CheckCodeQualitySchema,
 } from "./tools/coding-guard.js";
+import {
+  handlePlanCreate, PlanCreateSchema,
+  handlePlanList,   PlanListSchema,
+  handlePlanGet,    PlanGetSchema,
+  handlePlanUpdateTask, PlanUpdateTaskSchema,
+} from "./tools/plan.js";
 
 // ---------------------------------------------------------------------------
 // Init DB
@@ -74,7 +80,7 @@ if (_embeddingUrl) {
 // ---------------------------------------------------------------------------
 
 const server = new Server(
-  { name: "lucid", version: "1.9.5" },
+  { name: "lucid", version: "1.10.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -362,6 +368,77 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
+    // ── Planning ─────────────────────────────────────────────────────────────
+    {
+      name: "plan_create",
+      description:
+        "Create a plan with user story, ordered tasks, and test criteria. " +
+        "Call BEFORE writing any code to establish intent and acceptance criteria.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          title:       { type: "string", description: "Short plan title." },
+          description: { type: "string", description: "What this plan accomplishes." },
+          user_story:  { type: "string", description: "As a [user], I want [goal], so that [benefit]." },
+          tasks: {
+            type: "array",
+            description: "Ordered list of implementation tasks (1–20).",
+            items: {
+              type: "object",
+              properties: {
+                title:         { type: "string" },
+                description:   { type: "string" },
+                test_criteria: { type: "string", description: "How to verify this task is done." },
+              },
+              required: ["title", "description", "test_criteria"],
+            },
+            minItems: 1,
+            maxItems: 20,
+          },
+        },
+        required: ["title", "description", "user_story", "tasks"],
+      },
+    },
+    {
+      name: "plan_list",
+      description: "List plans with progress summary. Defaults to active plans.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          status: {
+            type: "string",
+            enum: ["active", "completed", "abandoned", "all"],
+            description: "Filter by plan status (default: active).",
+          },
+        },
+      },
+    },
+    {
+      name: "plan_get",
+      description: "Get full plan details: tasks, test criteria, status, and notes.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          plan_id: { type: "number", description: "Plan ID from plan_create or plan_list." },
+        },
+        required: ["plan_id"],
+      },
+    },
+    {
+      name: "plan_update_task",
+      description:
+        "Update a task status. Auto-completes the plan when all tasks are done. " +
+        "Statuses: pending → in_progress → done (or blocked).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          task_id: { type: "number", description: "Task ID from plan_get." },
+          status:  { type: "string", enum: ["pending", "in_progress", "done", "blocked"] },
+          note:    { type: "string", description: "Optional note appended to task history." },
+        },
+        required: ["task_id", "status"],
+      },
+    },
   ],
 }));
 
@@ -415,6 +492,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Coding Guard
       case "coding_rules":       text = handleGetCodingRules(); break;
       case "check_code_quality": text = handleCheckCodeQuality(CheckCodeQualitySchema.parse(args)); break;
+
+      // Planning
+      case "plan_create":      text = handlePlanCreate(db, stmts, PlanCreateSchema.parse(args)); break;
+      case "plan_list":        text = handlePlanList(stmts, PlanListSchema.parse(args)); break;
+      case "plan_get":         text = handlePlanGet(stmts, PlanGetSchema.parse(args)); break;
+      case "plan_update_task": text = handlePlanUpdateTask(stmts, PlanUpdateTaskSchema.parse(args)); break;
 
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
