@@ -178,7 +178,35 @@ function createSchema(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_plan_tasks_plan ON plan_tasks(plan_id, seq);
     CREATE INDEX IF NOT EXISTS idx_plans_status    ON plans(status);
+
+    -- Instance tracking tables
+    CREATE TABLE IF NOT EXISTS instances (
+      instance_id    TEXT PRIMARY KEY,
+      pid            INTEGER NOT NULL,
+      label          TEXT NOT NULL DEFAULT '',
+      started_at     INTEGER DEFAULT (unixepoch()),
+      last_heartbeat INTEGER DEFAULT (unixepoch()),
+      status         TEXT NOT NULL DEFAULT 'active'
+    );
+
+    CREATE TABLE IF NOT EXISTS instance_actions (
+      id           INTEGER PRIMARY KEY,
+      instance_id  TEXT NOT NULL REFERENCES instances(instance_id) ON DELETE CASCADE,
+      tool_name    TEXT NOT NULL,
+      args_json    TEXT NOT NULL DEFAULT '{}',
+      result_ok    INTEGER NOT NULL DEFAULT 1,
+      duration_ms  INTEGER NOT NULL DEFAULT 0,
+      created_at   INTEGER DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_ia_instance ON instance_actions(instance_id, created_at DESC);
   `);
+
+  // Migration: add instance_id column to plans if it doesn't exist yet
+  try {
+    db.exec("ALTER TABLE plans ADD COLUMN instance_id TEXT");
+  } catch (e: unknown) {
+    if (!(e instanceof Error) || !e.message.includes("duplicate column name")) throw e;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -227,12 +255,32 @@ export interface FileRewardRow {
   last_rewarded: number | null;
 }
 
+export interface InstanceRow {
+  instance_id: string;
+  pid: number;
+  label: string;
+  started_at: number;
+  last_heartbeat: number;
+  status: string;
+}
+
+export interface InstanceActionRow {
+  id: number;
+  instance_id: string;
+  tool_name: string;
+  args_json: string;
+  result_ok: number;
+  duration_ms: number;
+  created_at: number;
+}
+
 export interface PlanRow {
   id: number;
   title: string;
   description: string;
   user_story: string;
   status: string;
+  instance_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -288,7 +336,7 @@ export interface Statements {
   getFileRewards:         Stmt<[], FileRewardRow>;
   getTopFileRewards:      Stmt<[number], FileRewardRow>;
   // plans
-  insertPlan:             WriteStmt<[string, string, string]>;            // title, description, user_story
+  insertPlan:             WriteStmt<[string, string, string, string | null]>; // title, description, user_story, instance_id
   getPlanById:            Stmt<[number], PlanRow>;
   getAllPlans:             Stmt<[], PlanRow>;
   updatePlanStatus:       WriteStmt<[string, number]>;                   // status, id
@@ -469,8 +517,8 @@ export function prepareStatements(db: Database.Database): Statements {
     ),
 
     // plans
-    insertPlan: db.prepare<[string, string, string], unknown>(
-      "INSERT INTO plans (title, description, user_story) VALUES (?, ?, ?)"
+    insertPlan: db.prepare<[string, string, string, string | null], unknown>(
+      "INSERT INTO plans (title, description, user_story, instance_id) VALUES (?, ?, ?, ?)"
     ),
 
     getPlanById: db.prepare<[number], PlanRow>(

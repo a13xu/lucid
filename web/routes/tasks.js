@@ -1,21 +1,17 @@
 import { Router } from "express";
-import { stmts } from "../db";
-import type { PlanTaskRow, TestDefinitionRow, TestDefinitionWithLastRunRow } from "../db";
+import { stmts } from "../db.js";
 
 const router = Router();
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-function parseTask(row: PlanTaskRow) {
-  let notes: Array<{ text: string; ts: number }> = [];
+function parseTask(row) {
+  let notes = [];
   try { notes = JSON.parse(row.notes); } catch { /* ignore */ }
   return { ...row, notes };
 }
 
-function parseTestDef(row: TestDefinitionRow | TestDefinitionWithLastRunRow) {
-  let headers: Record<string, string> = {};
-  let assertions: unknown[] = [];
+function parseTestDef(row) {
+  let headers = {};
+  let assertions = [];
   try { headers = JSON.parse(row.headers); } catch { /* ignore */ }
   try { assertions = JSON.parse(row.assertions); } catch { /* ignore */ }
   return { ...row, headers, assertions };
@@ -25,12 +21,12 @@ function parseTestDef(row: TestDefinitionRow | TestDefinitionWithLastRunRow) {
 router.get("/tasks/:id", (req, res) => {
   try {
     const id = Number(req.params.id);
-    const task = stmts.getTaskById.get(id) as PlanTaskRow | undefined;
+    const task = stmts.getTaskById.get(id);
     if (!task) {
       res.status(404).json({ error: "Task not found" });
       return;
     }
-    const tests = (stmts.getTestsWithLastRun.all(id) as TestDefinitionWithLastRunRow[]).map(parseTestDef);
+    const tests = stmts.getTestsWithLastRun.all(id).map(parseTestDef);
     res.json({ ...parseTask(task), tests });
   } catch (err) {
     res.status(500).json({ error: String(err) });
@@ -41,20 +37,20 @@ router.get("/tasks/:id", (req, res) => {
 router.patch("/tasks/:id", (req, res) => {
   try {
     const id = Number(req.params.id);
-    const { status, note } = req.body as { status?: string; note?: string };
+    const { status, note } = req.body;
 
     if (!status) {
       res.status(400).json({ error: "status is required" });
       return;
     }
 
-    const task = stmts.getTaskById.get(id) as PlanTaskRow | undefined;
+    const task = stmts.getTaskById.get(id);
     if (!task) {
       res.status(404).json({ error: "Task not found" });
       return;
     }
 
-    let notes: Array<{ text: string; ts: number }> = [];
+    let notes = [];
     try { notes = JSON.parse(task.notes); } catch { /* ignore */ }
     if (note) {
       notes.push({ text: note, ts: Math.floor(Date.now() / 1000) });
@@ -62,15 +58,14 @@ router.patch("/tasks/:id", (req, res) => {
 
     stmts.updateTaskStatus.run(status, JSON.stringify(notes), id);
 
-    // Auto-complete plan if all tasks done
     if (status === "done") {
-      const remaining = stmts.countRemainingTasks.get(task.plan_id) as { count: number };
+      const remaining = stmts.countRemainingTasks.get(task.plan_id);
       if (remaining && remaining.count === 0) {
         stmts.updatePlanStatus.run("completed", task.plan_id);
       }
     }
 
-    const updated = stmts.getTaskById.get(id) as PlanTaskRow;
+    const updated = stmts.getTaskById.get(id);
     res.json(parseTask(updated));
   } catch (err) {
     res.status(500).json({ error: String(err) });

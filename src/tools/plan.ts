@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { z } from "zod";
 import type { Statements } from "../database.js";
+import { getInstanceInfo } from "../instance.js";
 
 // ---------------------------------------------------------------------------
 // Zod schemas
@@ -75,7 +76,7 @@ export function handlePlanCreate(
   const { title, description, user_story, tasks } = args;
 
   const planId = db.transaction(() => {
-    const result = stmts.insertPlan.run(title, description, user_story);
+    const result = stmts.insertPlan.run(title, description, user_story, getInstanceInfo()?.instance_id ?? null);
     const id = result.lastInsertRowid as number;
     for (let i = 0; i < tasks.length; i++) {
       const t = tasks[i]!;

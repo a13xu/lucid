@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { spawn } from "child_process";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -8,6 +11,7 @@ import {
 import { z } from "zod";
 
 import { initDatabase, prepareStatements } from "./database.js";
+import { registerInstance, logAction } from "./instance.js";
 import { guardRequest, guardOutput, configureGuard } from "./security/guard.js";
 import { allowHost } from "./security/ssrf.js";
 import { loadConfig } from "./config.js";
@@ -54,6 +58,7 @@ import {
 
 const db = initDatabase();
 const stmts = prepareStatements(db);
+registerInstance(db);
 
 // ---------------------------------------------------------------------------
 // Security guard — initialize from config + env
@@ -448,10 +453,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+  const t0 = Date.now();
 
   // Security: rate limit + WAF check before any execution
   const guard = guardRequest(name, args);
   if (guard.blocked) {
+    // Security block — do NOT log action
     return { content: [{ type: "text", text: guard.reason ?? "Request blocked by security guard" }], isError: true };
   }
 
@@ -504,8 +511,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     // Security: scan output for sensitive data leakage
+    logAction(db, name, args, true, Date.now() - t0);
     return { content: [{ type: "text", text: guardOutput(name, text) }] };
   } catch (err) {
+    logAction(db, name, args, false, Date.now() - t0);
     const message = err instanceof z.ZodError
       ? `Validation error: ${err.errors.map((e) => e.message).join(", ")}`
       : err instanceof Error ? err.message : String(err);
@@ -520,3 +529,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 const transport = new StdioServerTransport();
 await server.connect(transport);
 console.error("[lucid] Server started on stdio.");
+
+// Auto-start Web UI
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const webServerPath = join(__dirname, "..", "web", "server.js");
+const webProc = spawn(process.execPath, [webServerPath], {
+  detached: true,
+  stdio: "ignore",
+  env: { ...process.env, PORT: "3001" },
+});
+webProc.on("error", (err) => {
+  if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE") {
+    console.error("[lucid] Web UI failed to start:", err.message);
+  }
+});
+webProc.unref();
+console.error("[lucid] Web UI started on http://localhost:3001");

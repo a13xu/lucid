@@ -1,54 +1,18 @@
-import type { TestDefinitionRow, TestRunRow } from "./db";
-import { stmts } from "./db";
+import { stmts } from "./db.js";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-export type Assertion =
-  | { type: "status"; expected: number }
-  | { type: "body_key_exists"; key: string }
-  | { type: "body_json_path"; path: string; expected: unknown }
-  | { type: "body_contains"; value: string };
-
-export interface AssertionResult {
-  type: string;
-  expected: unknown;
-  actual: unknown;
-  pass: boolean;
-}
-
-export interface TestRunResult {
-  status: "pass" | "fail" | "error";
-  status_code: number | null;
-  response_body: string | null;
-  response_headers: Record<string, string>;
-  duration_ms: number;
-  error_message: string | null;
-  assertions_result: AssertionResult[];
-}
-
-// ---------------------------------------------------------------------------
-// Assertion evaluation
-// ---------------------------------------------------------------------------
-
-function getByPath(obj: unknown, path: string): unknown {
+function getByPath(obj, path) {
   if (typeof obj !== "object" || obj === null) return undefined;
   const parts = path.split(".");
-  let current: unknown = obj;
+  let current = obj;
   for (const part of parts) {
     if (typeof current !== "object" || current === null) return undefined;
-    current = (current as Record<string, unknown>)[part];
+    current = current[part];
   }
   return current;
 }
 
-function evaluateAssertions(
-  assertions: Assertion[],
-  statusCode: number,
-  parsedBody: unknown,
-  rawBody: string
-): AssertionResult[] {
-  return assertions.map((a): AssertionResult => {
+function evaluateAssertions(assertions, statusCode, parsedBody, rawBody) {
+  return assertions.map((a) => {
     switch (a.type) {
       case "status": {
         const pass = statusCode === a.expected;
@@ -57,7 +21,7 @@ function evaluateAssertions(
       case "body_key_exists": {
         const actual =
           typeof parsedBody === "object" && parsedBody !== null
-            ? a.key in (parsedBody as Record<string, unknown>)
+            ? a.key in parsedBody
             : false;
         return { type: "body_key_exists", expected: `key "${a.key}" exists`, actual, pass: actual };
       }
@@ -70,23 +34,22 @@ function evaluateAssertions(
         const pass = rawBody.includes(a.value);
         return { type: "body_contains", expected: `contains "${a.value}"`, actual: pass, pass };
       }
+      default:
+        return { type: a.type, expected: null, actual: null, pass: false };
     }
   });
 }
 
-// ---------------------------------------------------------------------------
-// Core runner
-// ---------------------------------------------------------------------------
-export async function runTest(def: TestDefinitionRow): Promise<TestRunResult> {
+export async function runTest(def) {
   const startTime = Date.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
 
   try {
-    const headers = JSON.parse(def.headers) as Record<string, string>;
-    const assertions = JSON.parse(def.assertions) as Assertion[];
+    const headers = JSON.parse(def.headers);
+    const assertions = JSON.parse(def.assertions);
 
-    const fetchOptions: RequestInit = {
+    const fetchOptions = {
       method: def.method,
       headers,
       signal: controller.signal,
@@ -100,10 +63,10 @@ export async function runTest(def: TestDefinitionRow): Promise<TestRunResult> {
     const duration_ms = Date.now() - startTime;
 
     const rawBody = await response.text();
-    let parsedBody: unknown = rawBody;
+    let parsedBody = rawBody;
     try { parsedBody = JSON.parse(rawBody); } catch { /* keep as string */ }
 
-    const responseHeaders: Record<string, string> = {};
+    const responseHeaders = {};
     response.headers.forEach((v, k) => { responseHeaders[k] = v; });
 
     const assertions_result = evaluateAssertions(assertions, response.status, parsedBody, rawBody);
@@ -136,10 +99,7 @@ export async function runTest(def: TestDefinitionRow): Promise<TestRunResult> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Save a run result to DB and return the inserted row
-// ---------------------------------------------------------------------------
-export function saveTestRun(testDefId: number, result: TestRunResult): TestRunRow {
+export function saveTestRun(testDefId, result) {
   const res = stmts.insertTestRun.run(
     testDefId,
     result.status,
@@ -150,7 +110,7 @@ export function saveTestRun(testDefId: number, result: TestRunResult): TestRunRo
     result.error_message,
     JSON.stringify(result.assertions_result)
   );
-  const id = res.lastInsertRowid as number;
+  const id = Number(res.lastInsertRowid);
   return {
     id,
     test_def_id: testDefId,
@@ -165,8 +125,8 @@ export function saveTestRun(testDefId: number, result: TestRunResult): TestRunRo
   };
 }
 
-export async function runAllForTask(taskId: number): Promise<Array<TestRunRow & { test_name: string }>> {
-  const defs = stmts.getTestsByTaskId.all(taskId) as TestDefinitionRow[];
+export async function runAllForTask(taskId) {
+  const defs = stmts.getTestsByTaskId.all(taskId);
   const results = await Promise.all(
     defs.map(async (def) => {
       const result = await runTest(def);

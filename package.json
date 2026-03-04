@@ -15,9 +15,7 @@
     "build": "tsc",
     "prepublishOnly": "npm run build",
     "web:install": "npm --prefix web install",
-    "web:server": "npm --prefix web run dev:server",
-    "web:client": "npm --prefix web run dev:client",
-    "web:build": "npm --prefix web run build"
+    "web": "npm --prefix web run dev"
   },
   "keywords": [
     "mcp",

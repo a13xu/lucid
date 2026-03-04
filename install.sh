@@ -112,6 +112,115 @@ else
   echo "   Pentru a instala mai târziu:  bash $SCRIPT_DIR/install.sh"
 fi
 
+# ---------------------------------------------------------------------------
+# 4. Claude Code Hooks + Skills (optional)
+# ---------------------------------------------------------------------------
+echo ""
+echo "┌──────────────────────────────────────────────────────────┐"
+echo "│  Claude Code Hooks & Skills                              │"
+echo "│  PostToolUse: auto sync_file + Logic Guardian            │"
+echo "│  SessionStart: auto init_project                         │"
+echo "│  Skills: /audit, /context                                │"
+echo "└──────────────────────────────────────────────────────────┘"
+echo ""
+read -r -p "Install Claude Code hooks for current project? [y/N] " yn_hooks
+yn_hooks="${yn_hooks:-N}"
+
+if [[ "$yn_hooks" =~ ^[Yy]$ ]]; then
+  # Target project = cwd where install.sh is invoked FROM (parent of lucid/ or explicit path)
+  read -r -p "Target project directory [default: current dir]: " TARGET_DIR
+  TARGET_DIR="${TARGET_DIR:-$(pwd)}"
+  TARGET_DIR="$(realpath "$TARGET_DIR" 2>/dev/null || echo "$TARGET_DIR")"
+
+  CLAUDE_DIR="$TARGET_DIR/.claude"
+  SETTINGS_FILE="$CLAUDE_DIR/settings.json"
+  COMMANDS_DIR="$CLAUDE_DIR/commands"
+
+  mkdir -p "$CLAUDE_DIR" "$COMMANDS_DIR"
+
+  # Make hook scripts executable
+  chmod +x "$SCRIPT_DIR/hooks/post-edit.sh" "$SCRIPT_DIR/hooks/session-start.sh"
+
+  POST_CMD="bash \"$SCRIPT_DIR/hooks/post-edit.sh\""
+  SESSION_CMD="bash \"$SCRIPT_DIR/hooks/session-start.sh\""
+
+  # Merge hooks into settings.json using Python
+  # Resolve Python binary (test actual execution)
+  if python3 -c "print(1)" > /dev/null 2>&1; then _PY=python3
+  elif python -c "print(1)" > /dev/null 2>&1;  then _PY=python
+  else echo "⚠️  Python not found — hooks not installed"; exit 1; fi
+
+  $_PY - "$SETTINGS_FILE" "$POST_CMD" "$SESSION_CMD" <<'PYEOF'
+import sys, json, os
+
+settings_path, post_cmd, session_cmd = sys.argv[1], sys.argv[2], sys.argv[3]
+
+try:
+    with open(settings_path) as f:
+        settings = json.load(f)
+except Exception:
+    settings = {}
+
+hooks = settings.setdefault("hooks", {})
+
+# PostToolUse: Write|Edit|NotebookEdit → post-edit.sh
+post_hooks = hooks.setdefault("PostToolUse", [])
+already = any(
+    isinstance(h, dict) and
+    h.get("matcher") == "Write|Edit|NotebookEdit" and
+    any(c.get("command","").endswith("post-edit.sh")
+        for c in h.get("hooks", []))
+    for h in post_hooks
+)
+if not already:
+    post_hooks.append({
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [{"type": "command", "command": post_cmd}]
+    })
+
+# SessionStart → session-start.sh
+session_hooks = hooks.setdefault("SessionStart", [])
+already_session = any(
+    isinstance(h, dict) and
+    any(c.get("command","").endswith("session-start.sh")
+        for c in h.get("hooks", []))
+    for h in session_hooks
+)
+if not already_session:
+    session_hooks.append({
+        "hooks": [{"type": "command", "command": session_cmd}]
+    })
+
+os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+with open(settings_path, "w") as f:
+    json.dump(settings, f, indent=2)
+
+print(f"  Updated: {settings_path}")
+PYEOF
+
+  # Install skill commands (/audit, /context)
+  cp "$SCRIPT_DIR/commands/audit.md"   "$COMMANDS_DIR/audit.md"
+  cp "$SCRIPT_DIR/commands/context.md" "$COMMANDS_DIR/context.md"
+
+  echo "✅ Hooks installed in: $SETTINGS_FILE"
+  echo "✅ Skills installed:   $COMMANDS_DIR/audit.md  $COMMANDS_DIR/context.md"
+  echo ""
+  echo "   PostToolUse (Write|Edit|NotebookEdit) → auto sync + Logic Guardian"
+  echo "   SessionStart                          → auto init_project"
+  echo "   /audit   → run Logic Guardian + 25 Golden Rules on changed files"
+  echo "   /context → get relevant context via TF-IDF retrieval"
+else
+  echo "⏭️  Hooks skipped"
+  echo ""
+  echo "   Manual setup — add to .claude/settings.json:"
+  echo "   PostToolUse matcher Write|Edit|NotebookEdit:"
+  echo "     bash \"$SCRIPT_DIR/hooks/post-edit.sh\""
+  echo "   SessionStart:"
+  echo "     bash \"$SCRIPT_DIR/hooks/session-start.sh\""
+  echo ""
+  echo "   Skills: copy lucid/commands/*.md → .claude/commands/"
+fi
+
 echo ""
 echo "╔══════════════════════════════════════╗"
 echo "║   ✅  Instalare completă!             ║"
