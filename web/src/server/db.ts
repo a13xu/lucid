@@ -17,9 +17,34 @@ db.pragma("foreign_keys = ON");
 console.error(`[web] DB: ${dbPath}`);
 
 // ---------------------------------------------------------------------------
-// New tables (plans + plan_tasks already exist from Lucid)
+// Full schema — idempotent (IF NOT EXISTS), safe to run alongside Lucid MCP
 // ---------------------------------------------------------------------------
 db.exec(`
+  CREATE TABLE IF NOT EXISTS plans (
+    id          INTEGER PRIMARY KEY,
+    title       TEXT NOT NULL,
+    description TEXT NOT NULL,
+    user_story  TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'active',
+    created_at  INTEGER DEFAULT (unixepoch()),
+    updated_at  INTEGER DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status);
+
+  CREATE TABLE IF NOT EXISTS plan_tasks (
+    id            INTEGER PRIMARY KEY,
+    plan_id       INTEGER NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+    seq           INTEGER NOT NULL,
+    title         TEXT NOT NULL,
+    description   TEXT NOT NULL,
+    test_criteria TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'pending',
+    notes         TEXT NOT NULL DEFAULT '[]',
+    created_at    INTEGER DEFAULT (unixepoch()),
+    updated_at    INTEGER DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_plan_tasks_plan ON plan_tasks(plan_id, seq);
+
   CREATE TABLE IF NOT EXISTS test_definitions (
     id         INTEGER PRIMARY KEY,
     task_id    INTEGER NOT NULL REFERENCES plan_tasks(id) ON DELETE CASCADE,
