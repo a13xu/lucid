@@ -17,6 +17,40 @@ function parseTestDef(row) {
   return { ...row, headers, assertions };
 }
 
+// GET /api/tasks?page=1&limit=20[&status=pending|in_progress|done|blocked]
+router.get("/tasks", (req, res) => {
+  try {
+    const rawPage  = req.query.page  !== undefined ? parseInt(req.query.page,  10) : 1;
+    const rawLimit = req.query.limit !== undefined ? parseInt(req.query.limit, 10) : 20;
+
+    if (isNaN(rawPage) || rawPage < 1) {
+      res.status(400).json({ error: "page must be an integer >= 1" });
+      return;
+    }
+    if (isNaN(rawLimit) || rawLimit < 1 || rawLimit > 100) {
+      res.status(400).json({ error: "limit must be an integer between 1 and 100" });
+      return;
+    }
+
+    const page  = rawPage;
+    const limit = rawLimit;
+    const offset = (page - 1) * limit;
+
+    const { count: total } = stmts.getAllTasksCount.get();
+    const data = stmts.getAllTasksPaginated.all(limit, offset).map(parseTask);
+
+    res.json({
+      data,
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // GET /api/tasks/:id
 router.get("/tasks/:id", (req, res) => {
   try {

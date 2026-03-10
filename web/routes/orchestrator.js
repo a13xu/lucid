@@ -1,24 +1,8 @@
 import { Router } from "express";
 import { stmts } from "../db.js";
+import { sseClients, broadcast } from "../events.js";
 
 const router = Router();
-
-// ---------------------------------------------------------------------------
-// SSE client registry
-// ---------------------------------------------------------------------------
-
-const sseClients = new Set();
-
-function broadcast(event, data) {
-  const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-  for (const client of sseClients) {
-    try {
-      client.write(msg);
-    } catch {
-      sseClients.delete(client);
-    }
-  }
-}
 
 // ---------------------------------------------------------------------------
 // DB poll — compares MAX(id) and heartbeat signature
@@ -73,6 +57,19 @@ router.get("/events", (req, res) => {
     clearInterval(ka);
     sseClients.delete(res);
   });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/instances  — snapshot of all instances
+// ---------------------------------------------------------------------------
+
+router.get("/instances", (req, res) => {
+  try {
+    const instances = stmts.getAllInstancesWithLastAction.all();
+    res.json(instances);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ---------------------------------------------------------------------------

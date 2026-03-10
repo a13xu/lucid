@@ -51,6 +51,7 @@ import {
   handlePlanGet,    PlanGetSchema,
   handlePlanUpdateTask, PlanUpdateTaskSchema,
 } from "./tools/plan.js";
+import { handleRunE2eTest, RunE2eTestSchema } from "./tools/e2e.js";
 
 // ---------------------------------------------------------------------------
 // Init DB
@@ -378,13 +379,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: "plan_create",
       description:
         "Create a plan with user story, ordered tasks, and test criteria. " +
-        "Call BEFORE writing any code to establish intent and acceptance criteria.",
+        "Call BEFORE writing any code to establish intent and acceptance criteria. " +
+        "An E2E verification task is automatically appended as the final task. " +
+        "Use max_retries (default 3, range 1–10) to control how many times the E2E " +
+        "remediation loop retries before giving up.",
       inputSchema: {
         type: "object",
         properties: {
           title:       { type: "string", description: "Short plan title." },
           description: { type: "string", description: "What this plan accomplishes." },
           user_story:  { type: "string", description: "As a [user], I want [goal], so that [benefit]." },
+          max_retries: {
+            type: "integer",
+            description: "Maximum E2E remediation retries before the plan is marked e2e_failed. Default: 3. Min: 1. Max: 10.",
+            minimum: 1,
+            maximum: 10,
+            default: 3,
+          },
           tasks: {
             type: "array",
             description: "Ordered list of implementation tasks (1–20).",
@@ -442,6 +453,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           note:    { type: "string", description: "Optional note appended to task history." },
         },
         required: ["task_id", "status"],
+      },
+    },
+    {
+      name: "run_e2e_test",
+      description:
+        "Run the E2E verification test for a plan's final E2E task. " +
+        "Executes the task's test_criteria as a shell command, captures stdout/stderr, " +
+        "and updates e2e_result ('pass'/'fail') and e2e_error in the database. " +
+        "On pass, marks the task as done and auto-completes the plan if all tasks are done. " +
+        "On fail, reports retries remaining based on the plan's max_retries setting.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          task_id: { type: "number", description: "ID of the E2E task to run (from plan_get)." },
+        },
+        required: ["task_id"],
       },
     },
   ],
@@ -504,7 +531,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "plan_create":      text = handlePlanCreate(db, stmts, PlanCreateSchema.parse(args)); break;
       case "plan_list":        text = handlePlanList(stmts, PlanListSchema.parse(args)); break;
       case "plan_get":         text = handlePlanGet(stmts, PlanGetSchema.parse(args)); break;
-      case "plan_update_task": text = handlePlanUpdateTask(stmts, PlanUpdateTaskSchema.parse(args)); break;
+      case "plan_update_task": text = handlePlanUpdateTask(db, stmts, PlanUpdateTaskSchema.parse(args)); break;
+      case "run_e2e_test":     text = handleRunE2eTest(db, stmts, RunE2eTestSchema.parse(args)); break;
 
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
@@ -537,7 +565,7 @@ const webServerPath = join(__dirname, "..", "web", "server.js");
 const webProc = spawn(process.execPath, [webServerPath], {
   detached: true,
   stdio: "ignore",
-  env: { ...process.env, PORT: "3001" },
+  env: { ...process.env, PORT: "3069" },
 });
 webProc.on("error", (err) => {
   if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE") {
@@ -545,4 +573,4 @@ webProc.on("error", (err) => {
   }
 });
 webProc.unref();
-console.error("[lucid] Web UI started on http://localhost:3001");
+console.error("[lucid] Web UI started on http://localhost:3069");

@@ -159,6 +159,7 @@ function createSchema(db: Database.Database): void {
       description TEXT NOT NULL,
       user_story  TEXT NOT NULL,
       status      TEXT NOT NULL DEFAULT 'active',
+      max_retries INTEGER NOT NULL DEFAULT 3,
       created_at  INTEGER DEFAULT (unixepoch()),
       updated_at  INTEGER DEFAULT (unixepoch())
     );
@@ -172,12 +173,17 @@ function createSchema(db: Database.Database): void {
       test_criteria TEXT NOT NULL,
       status        TEXT NOT NULL DEFAULT 'pending',
       notes         TEXT NOT NULL DEFAULT '[]',
+      is_e2e        INTEGER NOT NULL DEFAULT 0,
+      e2e_result    TEXT,
+      retry_count   INTEGER NOT NULL DEFAULT 0,
+      e2e_error     TEXT,
       created_at    INTEGER DEFAULT (unixepoch()),
       updated_at    INTEGER DEFAULT (unixepoch())
     );
 
     CREATE INDEX IF NOT EXISTS idx_plan_tasks_plan ON plan_tasks(plan_id, seq);
     CREATE INDEX IF NOT EXISTS idx_plans_status    ON plans(status);
+    CREATE INDEX IF NOT EXISTS idx_plan_tasks_parent ON plan_tasks(parent_task_id);
 
     -- Instance tracking tables
     CREATE TABLE IF NOT EXISTS instances (
@@ -204,6 +210,44 @@ function createSchema(db: Database.Database): void {
   // Migration: add instance_id column to plans if it doesn't exist yet
   try {
     db.exec("ALTER TABLE plans ADD COLUMN instance_id TEXT");
+  } catch (e: unknown) {
+    if (!(e instanceof Error) || !e.message.includes("duplicate column name")) throw e;
+  }
+
+  // Migration: add max_retries column to plans if it doesn't exist yet
+  try {
+    db.exec("ALTER TABLE plans ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 3");
+  } catch (e: unknown) {
+    if (!(e instanceof Error) || !e.message.includes("duplicate column name")) throw e;
+  }
+
+  // Migration: add is_e2e column to plan_tasks if it doesn't exist yet
+  try {
+    db.exec("ALTER TABLE plan_tasks ADD COLUMN is_e2e INTEGER NOT NULL DEFAULT 0");
+  } catch (e: unknown) {
+    if (!(e instanceof Error) || !e.message.includes("duplicate column name")) throw e;
+  }
+
+  // Migration: add e2e_result, retry_count, e2e_error columns to plan_tasks
+  try {
+    db.exec("ALTER TABLE plan_tasks ADD COLUMN e2e_result TEXT");
+  } catch (e: unknown) {
+    if (!(e instanceof Error) || !e.message.includes("duplicate column name")) throw e;
+  }
+  try {
+    db.exec("ALTER TABLE plan_tasks ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0");
+  } catch (e: unknown) {
+    if (!(e instanceof Error) || !e.message.includes("duplicate column name")) throw e;
+  }
+  try {
+    db.exec("ALTER TABLE plan_tasks ADD COLUMN e2e_error TEXT");
+  } catch (e: unknown) {
+    if (!(e instanceof Error) || !e.message.includes("duplicate column name")) throw e;
+  }
+
+  // Migration: add parent_task_id column to plan_tasks (for [FIX] remediation tasks)
+  try {
+    db.exec("ALTER TABLE plan_tasks ADD COLUMN parent_task_id INTEGER REFERENCES plan_tasks(id)");
   } catch (e: unknown) {
     if (!(e instanceof Error) || !e.message.includes("duplicate column name")) throw e;
   }
@@ -280,6 +324,7 @@ export interface PlanRow {
   description: string;
   user_story: string;
   status: string;
+  max_retries: number;
   instance_id: string | null;
   created_at: number;
   updated_at: number;
@@ -294,6 +339,11 @@ export interface PlanTaskRow {
   test_criteria: string;
   status: string;
   notes: string;  // JSON string
+  is_e2e: number; // 1 = auto-generated E2E verification task
+  e2e_result: string | null;  // null | 'pass' | 'fail'
+  retry_count: number;
+  e2e_error: string | null;
+  parent_task_id: number | null; // set on [FIX] remediation tasks; references the parent E2E task
   created_at: number;
   updated_at: number;
 }
@@ -336,16 +386,19 @@ export interface Statements {
   getFileRewards:         Stmt<[], FileRewardRow>;
   getTopFileRewards:      Stmt<[number], FileRewardRow>;
   // plans
-  insertPlan:             WriteStmt<[string, string, string, string | null]>; // title, description, user_story, instance_id
+  insertPlan:             WriteStmt<[string, string, string, number, string | null]>; // title, description, user_story, max_retries, instance_id
   getPlanById:            Stmt<[number], PlanRow>;
   getAllPlans:             Stmt<[], PlanRow>;
   updatePlanStatus:       WriteStmt<[string, number]>;                   // status, id
   // plan_tasks
-  insertPlanTask:         WriteStmt<[number, number, string, string, string]>; // plan_id, seq, title, description, test_criteria
+  insertPlanTask:         WriteStmt<[number, number, string, string, string, number]>; // plan_id, seq, title, description, test_criteria, is_e2e
   getTasksByPlanId:       Stmt<[number], PlanTaskRow>;
   getTaskById:            Stmt<[number], PlanTaskRow>;
   updateTaskStatus:       WriteStmt<[string, string, number]>;           // status, notes, id
+  updateTaskE2eResult:    WriteStmt<[string | null, string | null, number, number]>; // e2e_result, e2e_error, retry_count, id
   countRemainingTasks:    Stmt<[number], { count: number }>;             // plan_id → tasks != 'done'
+  insertFixTask:          WriteStmt<[number, number, string, string, string, number]>; // plan_id, seq, title, description, test_criteria, parent_task_id
+  getMaxSeqForPlan:       Stmt<[number], { max_seq: number }>;           // plan_id → max seq
 }
 
 export function prepareStatements(db: Database.Database): Statements {
@@ -517,8 +570,8 @@ export function prepareStatements(db: Database.Database): Statements {
     ),
 
     // plans
-    insertPlan: db.prepare<[string, string, string, string | null], unknown>(
-      "INSERT INTO plans (title, description, user_story, instance_id) VALUES (?, ?, ?, ?)"
+    insertPlan: db.prepare<[string, string, string, number, string | null], unknown>(
+      "INSERT INTO plans (title, description, user_story, max_retries, instance_id) VALUES (?, ?, ?, ?, ?)"
     ),
 
     getPlanById: db.prepare<[number], PlanRow>(
@@ -534,8 +587,8 @@ export function prepareStatements(db: Database.Database): Statements {
     ),
 
     // plan_tasks
-    insertPlanTask: db.prepare<[number, number, string, string, string], unknown>(
-      "INSERT INTO plan_tasks (plan_id, seq, title, description, test_criteria) VALUES (?, ?, ?, ?, ?)"
+    insertPlanTask: db.prepare<[number, number, string, string, string, number], unknown>(
+      "INSERT INTO plan_tasks (plan_id, seq, title, description, test_criteria, is_e2e) VALUES (?, ?, ?, ?, ?, ?)"
     ),
 
     getTasksByPlanId: db.prepare<[number], PlanTaskRow>(
@@ -550,8 +603,20 @@ export function prepareStatements(db: Database.Database): Statements {
       "UPDATE plan_tasks SET status = ?, notes = ?, updated_at = unixepoch() WHERE id = ?"
     ),
 
+    updateTaskE2eResult: db.prepare<[string | null, string | null, number, number], unknown>(
+      "UPDATE plan_tasks SET e2e_result = ?, e2e_error = ?, retry_count = ?, updated_at = unixepoch() WHERE id = ?"
+    ),
+
     countRemainingTasks: db.prepare<[number], { count: number }>(
       "SELECT COUNT(*) as count FROM plan_tasks WHERE plan_id = ? AND status != 'done'"
+    ),
+
+    insertFixTask: db.prepare<[number, number, string, string, string, number], unknown>(
+      "INSERT INTO plan_tasks (plan_id, seq, title, description, test_criteria, parent_task_id, status) VALUES (?, ?, ?, ?, ?, ?, 'in_progress')"
+    ),
+
+    getMaxSeqForPlan: db.prepare<[number], { max_seq: number }>(
+      "SELECT COALESCE(MAX(seq), 0) as max_seq FROM plan_tasks WHERE plan_id = ?"
     ),
   };
 }

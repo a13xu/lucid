@@ -5,15 +5,45 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Lucid</title>
   <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/xterm/css/xterm.css" />
 </head>
 <body>
   <nav>
-    <a href="#/" class="nav-brand">Lucid <span id="sse-dot" class="sse-dot sse-disconnected"></span></a>
+    <a href="#/" class="nav-brand">
+      <svg class="hal-eye" viewBox="0 0 40 40" width="28" height="28" xmlns="http://www.w3.org/2000/svg" aria-label="HAL 9000">
+        <!-- outer bezel -->
+        <circle cx="20" cy="20" r="19" fill="#1a1a1a" stroke="#333" stroke-width="1"/>
+        <!-- glow ring -->
+        <circle cx="20" cy="20" r="16" fill="#0a0000" stroke="#ff1a00" stroke-width="0.6" opacity="0.6"/>
+        <!-- wide iris -->
+        <circle cx="20" cy="20" r="13" fill="url(#hal-radial)"/>
+        <!-- mid lens ring -->
+        <circle cx="20" cy="20" r="8" fill="none" stroke="#ff4400" stroke-width="0.8" opacity="0.5"/>
+        <!-- pupil -->
+        <circle cx="20" cy="20" r="5" fill="#ff0000" opacity="0.95"/>
+        <!-- inner glint -->
+        <circle cx="22" cy="18" r="1.5" fill="#ff9980" opacity="0.7"/>
+        <defs>
+          <radialGradient id="hal-radial" cx="50%" cy="50%" r="50%">
+            <stop offset="0%"   stop-color="#cc1100"/>
+            <stop offset="40%"  stop-color="#550000"/>
+            <stop offset="100%" stop-color="#0a0000"/>
+          </radialGradient>
+        </defs>
+      </svg>
+      Lucid <span id="sse-dot" class="sse-dot sse-disconnected"></span>
+    </a>
     <a href="#/" class="nav-link">Orchestrator</a>
     <a href="#/plans" class="nav-link">Plans</a>
+    <a href="#/e2e" class="nav-link">E2E Tests</a>
+    <a href="#/chat" class="nav-link">Chat</a>
+    <a href="#/terminal" class="nav-link">Terminal</a>
   </nav>
   <div id="app"></div>
   <div id="modal-overlay" class="modal-overlay hidden"></div>
+  <script src="/xterm/xterm.js"></script>
+  <script src="/xterm/addon-fit/addon-fit.js"></script>
+  <script src="/xterm/addon-web-links/addon-web-links.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -72,6 +72,12 @@ router.post("/auto/sync-file", async (req, res) => {
   try {
     const result = _handleSyncFile(_stmts, { path });
     res.json({ ok: true, result });
+    // Fire-and-forget: trigger E2E tests whose tags overlap with this file
+    fetch(`http://localhost:${process.env.PORT ?? 3069}/api/e2e/trigger-by-file`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file_path: path }),
+    }).catch(() => {});
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }

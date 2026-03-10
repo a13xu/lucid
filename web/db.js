@@ -95,11 +95,63 @@ try {
   if (!e.message.includes("duplicate column name")) throw e;
 }
 
+// Migration: E2E columns for plans
+try {
+  db.exec("ALTER TABLE plans ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 3");
+} catch (e) {
+  if (!e.message.includes("duplicate column name")) throw e;
+}
+
+// Migration: E2E columns for plan_tasks
+for (const sql of [
+  "ALTER TABLE plan_tasks ADD COLUMN is_e2e INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE plan_tasks ADD COLUMN e2e_result TEXT",
+  "ALTER TABLE plan_tasks ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE plan_tasks ADD COLUMN e2e_error TEXT",
+  "ALTER TABLE plan_tasks ADD COLUMN parent_task_id INTEGER",
+]) {
+  try { db.exec(sql); } catch (e) {
+    if (!e.message.includes("duplicate column name")) throw e;
+  }
+}
+
+// ── Playwright E2E tables ───────────────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS playwright_tests (
+    id          INTEGER PRIMARY KEY,
+    task_id     INTEGER REFERENCES plan_tasks(id) ON DELETE SET NULL,
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    test_code   TEXT NOT NULL,
+    base_url    TEXT NOT NULL DEFAULT 'http://localhost:3069',
+    tags        TEXT NOT NULL DEFAULT '[]',
+    created_at  INTEGER DEFAULT (unixepoch()),
+    updated_at  INTEGER DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_pw_tests_task ON playwright_tests(task_id);
+
+  CREATE TABLE IF NOT EXISTS playwright_runs (
+    id           INTEGER PRIMARY KEY,
+    test_id      INTEGER NOT NULL REFERENCES playwright_tests(id) ON DELETE CASCADE,
+    status       TEXT NOT NULL DEFAULT 'running',
+    data_in      TEXT NOT NULL DEFAULT '{}',
+    data_out     TEXT NOT NULL DEFAULT '{}',
+    error_msg    TEXT,
+    duration_ms  INTEGER,
+    triggered_by TEXT NOT NULL DEFAULT 'manual',
+    run_at       INTEGER DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_pw_runs_test ON playwright_runs(test_id, run_at DESC);
+`);
+
 export const stmts = {
   getAllPlansWithStats: db.prepare(`
     SELECT p.*,
            COUNT(t.id) as task_count,
-           SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) as tasks_done
+           SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) as tasks_done,
+           (SELECT id FROM plan_tasks WHERE plan_id = p.id AND is_e2e = 1 ORDER BY seq DESC LIMIT 1) as e2e_task_id,
+           (SELECT e2e_result FROM plan_tasks WHERE plan_id = p.id AND is_e2e = 1 ORDER BY seq DESC LIMIT 1) as e2e_result,
+           (SELECT retry_count FROM plan_tasks WHERE plan_id = p.id AND is_e2e = 1 ORDER BY seq DESC LIMIT 1) as e2e_retry_count
     FROM plans p
     LEFT JOIN plan_tasks t ON t.plan_id = p.id
     GROUP BY p.id
@@ -108,19 +160,55 @@ export const stmts = {
   getPlansByStatusWithStats: db.prepare(`
     SELECT p.*,
            COUNT(t.id) as task_count,
-           SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) as tasks_done
+           SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) as tasks_done,
+           (SELECT id FROM plan_tasks WHERE plan_id = p.id AND is_e2e = 1 ORDER BY seq DESC LIMIT 1) as e2e_task_id,
+           (SELECT e2e_result FROM plan_tasks WHERE plan_id = p.id AND is_e2e = 1 ORDER BY seq DESC LIMIT 1) as e2e_result,
+           (SELECT retry_count FROM plan_tasks WHERE plan_id = p.id AND is_e2e = 1 ORDER BY seq DESC LIMIT 1) as e2e_retry_count
     FROM plans p
     LEFT JOIN plan_tasks t ON t.plan_id = p.id
     WHERE p.status = ?
     GROUP BY p.id
     ORDER BY p.created_at DESC
   `),
+  getAllPlansPaginated: db.prepare(`
+    SELECT p.*,
+           COUNT(t.id) as task_count,
+           SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) as tasks_done
+    FROM plans p
+    LEFT JOIN plan_tasks t ON t.plan_id = p.id
+    GROUP BY p.id
+    ORDER BY p.created_at DESC
+    LIMIT ? OFFSET ?
+  `),
+  getPlansByStatusPaginated: db.prepare(`
+    SELECT p.*,
+           COUNT(t.id) as task_count,
+           SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) as tasks_done
+    FROM plans p
+    LEFT JOIN plan_tasks t ON t.plan_id = p.id
+    WHERE p.status = ?
+    GROUP BY p.id
+    ORDER BY p.created_at DESC
+    LIMIT ? OFFSET ?
+  `),
+  getAllPlansCount: db.prepare("SELECT COUNT(*) as count FROM plans"),
+  getPlansByStatusCount: db.prepare("SELECT COUNT(*) as count FROM plans WHERE status = ?"),
   getPlanById: db.prepare("SELECT * FROM plans WHERE id = ?"),
   insertPlan: db.prepare("INSERT INTO plans (title, description, user_story) VALUES (?, ?, ?)"),
   updatePlanStatus: db.prepare("UPDATE plans SET status = ?, updated_at = unixepoch() WHERE id = ?"),
   deletePlan: db.prepare("DELETE FROM plans WHERE id = ?"),
 
   getTasksByPlanId: db.prepare("SELECT * FROM plan_tasks WHERE plan_id = ? ORDER BY seq"),
+  getAllTasksPaginated: db.prepare(
+    "SELECT * FROM plan_tasks ORDER BY created_at DESC LIMIT ? OFFSET ?"
+  ),
+  getAllTasksCount: db.prepare("SELECT COUNT(*) as count FROM plan_tasks"),
+  getTasksByPlanIdPaginated: db.prepare(
+    "SELECT * FROM plan_tasks WHERE plan_id = ? ORDER BY seq LIMIT ? OFFSET ?"
+  ),
+  getTasksByPlanIdCount: db.prepare(
+    "SELECT COUNT(*) as count FROM plan_tasks WHERE plan_id = ?"
+  ),
   getTaskById: db.prepare("SELECT * FROM plan_tasks WHERE id = ?"),
   insertPlanTask: db.prepare(
     "INSERT INTO plan_tasks (plan_id, seq, title, description, test_criteria) VALUES (?, ?, ?, ?, ?)"
@@ -195,5 +283,60 @@ export const stmts = {
 
   getMaxActionId: db.prepare(
     "SELECT COALESCE(MAX(id), 0) AS max_id FROM instance_actions"
+  ),
+
+  // ── Playwright ─────────────────────────────────────────────────────────────
+  getAllPlaywrightTests: db.prepare(`
+    SELECT pt.*,
+           pr.status        AS last_status,
+           pr.run_at        AS last_run_at,
+           pr.duration_ms   AS last_duration_ms,
+           COUNT(pr2.id)    AS run_count
+    FROM playwright_tests pt
+    LEFT JOIN playwright_runs pr ON pr.id = (
+      SELECT id FROM playwright_runs WHERE test_id = pt.id ORDER BY run_at DESC LIMIT 1
+    )
+    LEFT JOIN playwright_runs pr2 ON pr2.test_id = pt.id
+    GROUP BY pt.id
+    ORDER BY pt.updated_at DESC
+  `),
+  getPlaywrightTestsByTaskId: db.prepare(`
+    SELECT * FROM playwright_tests WHERE task_id = ? ORDER BY id
+  `),
+  getPlaywrightTestById: db.prepare("SELECT * FROM playwright_tests WHERE id = ?"),
+  insertPlaywrightTest: db.prepare(
+    "INSERT INTO playwright_tests (task_id, name, description, test_code, base_url, tags) VALUES (?, ?, ?, ?, ?, ?)"
+  ),
+  updatePlaywrightTest: db.prepare(
+    "UPDATE playwright_tests SET name=?, description=?, test_code=?, base_url=?, tags=?, updated_at=unixepoch() WHERE id=?"
+  ),
+  deletePlaywrightTest: db.prepare("DELETE FROM playwright_tests WHERE id = ?"),
+  getTestsByTag: db.prepare(
+    "SELECT * FROM playwright_tests WHERE tags LIKE ?"
+  ),
+
+  insertPlaywrightRun: db.prepare(
+    "INSERT INTO playwright_runs (test_id, status, data_in, triggered_by) VALUES (?, 'running', ?, ?)"
+  ),
+  updatePlaywrightRun: db.prepare(
+    "UPDATE playwright_runs SET status=?, data_out=?, error_msg=?, duration_ms=? WHERE id=?"
+  ),
+  getRunsByTestId: db.prepare(
+    "SELECT * FROM playwright_runs WHERE test_id = ? ORDER BY run_at DESC LIMIT 20"
+  ),
+  getRunById: db.prepare("SELECT * FROM playwright_runs WHERE id = ?"),
+
+  // E2E task queries
+  getE2eTaskForPlan: db.prepare(
+    "SELECT * FROM plan_tasks WHERE plan_id = ? AND is_e2e = 1 ORDER BY seq DESC LIMIT 1"
+  ),
+  resetE2eTask: db.prepare(
+    "UPDATE plan_tasks SET e2e_result = NULL, e2e_error = NULL, retry_count = 0, status = 'pending', updated_at = unixepoch() WHERE id = ?"
+  ),
+  updateTaskE2eResult: db.prepare(
+    "UPDATE plan_tasks SET e2e_result = ?, e2e_error = ?, retry_count = ?, updated_at = unixepoch() WHERE id = ?"
+  ),
+  getMaxSeqForPlan: db.prepare(
+    "SELECT COALESCE(MAX(seq), 0) as max_seq FROM plan_tasks WHERE plan_id = ?"
   ),
 };

@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { z } from "zod";
 import type { Statements } from "../database.js";
 import { getInstanceInfo } from "../instance.js";
+import { handleRunE2eTest } from "./e2e.js";
 
 // ---------------------------------------------------------------------------
 // Zod schemas
@@ -11,6 +12,7 @@ export const PlanCreateSchema = z.object({
   title:       z.string().min(1),
   description: z.string().min(1),
   user_story:  z.string().min(1).describe("As a [user], I want [goal], so that [benefit]"),
+  max_retries: z.number().int().min(0).max(10).optional().default(3),
   tasks: z.array(z.object({
     title:         z.string().min(1),
     description:   z.string().min(1),
@@ -19,7 +21,7 @@ export const PlanCreateSchema = z.object({
 });
 
 export const PlanListSchema = z.object({
-  status: z.enum(["active", "completed", "abandoned", "all"]).optional().default("active"),
+  status: z.enum(["active", "completed", "abandoned", "e2e_failed", "all"]).optional().default("active"),
 });
 
 export const PlanGetSchema = z.object({
@@ -53,9 +55,10 @@ const STATUS_ICONS: Record<string, string> = {
 };
 
 const PLAN_STATUS_ICONS: Record<string, string> = {
-  active:    "active",
-  completed: "completed",
-  abandoned: "abandoned",
+  active:     "active",
+  completed:  "completed",
+  abandoned:  "abandoned",
+  e2e_failed: "e2e_failed",
 };
 
 function progressBar(done: number, total: number): string {
@@ -73,18 +76,27 @@ export function handlePlanCreate(
   stmts: Statements,
   args: PlanCreateArgs,
 ): string {
-  const { title, description, user_story, tasks } = args;
+  const { title, description, user_story, max_retries, tasks } = args;
+
+  const e2eTask = {
+    title: `[E2E] Verify: ${title}`,
+    description: `End-to-end verification for: ${user_story}`,
+    test_criteria: `All tasks in plan "${title}" are done and the feature works end-to-end as described in the user story.`,
+  };
 
   const planId = db.transaction(() => {
-    const result = stmts.insertPlan.run(title, description, user_story, getInstanceInfo()?.instance_id ?? null);
+    const result = stmts.insertPlan.run(title, description, user_story, max_retries, getInstanceInfo()?.instance_id ?? null);
     const id = result.lastInsertRowid as number;
     for (let i = 0; i < tasks.length; i++) {
       const t = tasks[i]!;
-      stmts.insertPlanTask.run(id, i + 1, t.title, t.description, t.test_criteria);
+      stmts.insertPlanTask.run(id, i + 1, t.title, t.description, t.test_criteria, 0);
     }
+    // Auto-append E2E verification task as final task
+    stmts.insertPlanTask.run(id, tasks.length + 1, e2eTask.title, e2eTask.description, e2eTask.test_criteria, 1);
     return id;
   })();
 
+  const totalTasks = tasks.length + 1; // includes E2E task
   const lines: string[] = [
     `[PLAN #${planId} active] ${title}`,
     `User Story: ${user_story}`,
@@ -93,7 +105,8 @@ export function handlePlanCreate(
   for (let i = 0; i < tasks.length; i++) {
     lines.push(`[TASK ${i + 1} #${planId * 100 + i + 1} pending] ${tasks[i]!.title}`);
   }
-  lines.push(``, `Progress: 0/${tasks.length} done`);
+  lines.push(`[TASK ${tasks.length + 1} #${planId * 100 + tasks.length + 1} pending] ${e2eTask.title}`);
+  lines.push(``, `Progress: 0/${totalTasks} done`);
 
   return lines.join("\n");
 }
@@ -136,6 +149,7 @@ export function handlePlanGet(
   const lines: string[] = [
     `[PLAN #${plan.id} | ${label}] ${plan.title}`,
     `User Story: ${plan.user_story}`,
+    `Max Retries: ${plan.max_retries}`,
     `Progress: ${doneCount}/${total} done ${bar}`,
     ``,
   ];
@@ -145,6 +159,12 @@ export function handlePlanGet(
     lines.push(`[${task.seq}] ${icon} ${task.status}  — ${task.title}`);
     lines.push(`    Desc: ${task.description}`);
     lines.push(`    Test: ${task.test_criteria}`);
+
+    if (task.is_e2e) {
+      const e2eStatus = task.e2e_result ?? "pending";
+      lines.push(`    E2E: ${e2eStatus}  retries: ${task.retry_count}`);
+      if (task.e2e_error) lines.push(`    E2E Error: ${task.e2e_error}`);
+    }
 
     let parsedNotes: Array<{ text: string; ts: number }> = [];
     try { parsedNotes = JSON.parse(task.notes); } catch { /* ignore */ }
@@ -159,6 +179,7 @@ export function handlePlanGet(
 }
 
 export function handlePlanUpdateTask(
+  db: Database.Database,
   stmts: Statements,
   args: PlanUpdateTaskArgs,
 ): string {
@@ -176,15 +197,27 @@ export function handlePlanUpdateTask(
 
   stmts.updateTaskStatus.run(status, notesJson, task_id);
 
-  const lines: string[] = [`✅ Task #${task_id} → ${status}`];
+  const lines: string[] = [`Task #${task_id} -> ${status}`];
 
   if (status === "done") {
+    // If this is a [FIX] remediation task, automatically re-run the parent E2E test
+    if (task.parent_task_id !== null) {
+      const parentTask = stmts.getTaskById.get(task.parent_task_id);
+      if (parentTask && parentTask.is_e2e && parentTask.e2e_result !== "pass") {
+        lines.push(``, `[AUTO E2E RE-RUN] Triggering E2E test on task #${task.parent_task_id}...`);
+        const e2eOutput = handleRunE2eTest(db, stmts, { task_id: task.parent_task_id });
+        lines.push(e2eOutput);
+        return lines.join("\n");
+      }
+    }
+
+    // Normal done — check if plan is fully complete
     const remaining = stmts.countRemainingTasks.get(task.plan_id);
     if (remaining && remaining.count === 0) {
       stmts.updatePlanStatus.run("completed", task.plan_id);
       const plan = stmts.getPlanById.get(task.plan_id);
       const taskCount = stmts.getTasksByPlanId.all(task.plan_id).length;
-      lines.push(`🎉 Plan #${task.plan_id} completat! Toate ${taskCount} task-uri done.`);
+      lines.push(`Plan #${task.plan_id} completed! All ${taskCount} tasks done.`);
       if (plan) lines.push(`   "${plan.title}"`);
     }
   }
