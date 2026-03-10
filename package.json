@@ -1,6 +1,6 @@
 {
   "name": "@a13xu/lucid",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "description": "Token-efficient memory, code indexing, and validation for Claude Code agents — SQLite + FTS5, TF-IDF + Qdrant retrieval, AST skeleton pruning, diff-aware context, Logic Guardian drift detection",
   "type": "module",
   "bin": {
@@ -9,6 +9,7 @@
   "files": [
     "build/**/*.js",
     "build/**/*.d.ts",
+    "skills/**/*.md",
     "README.md"
   ],
   "scripts": {

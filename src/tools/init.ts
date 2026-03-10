@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { resolve, join } from "path";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { resolve, join, basename } from "path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
+import { fileURLToPath } from "url";
 import type { Statements } from "../database.js";
 import { indexProject, type IndexResult } from "../indexer/project.js";
 import {
@@ -157,6 +158,18 @@ export async function handleInitProject(stmts: Statements, input: InitProjectInp
     lines.push(`🔗 Hook: ${hookResult.reason}`);
   }
 
+  // ── Skills ────────────────────────────────────────────────────────────────
+  const skillsResult = installSkills(dir);
+  if (skillsResult.installed.length > 0) {
+    lines.push(`📚 Skills installed in .claude/skills/:`);
+    for (const s of skillsResult.installed) {
+      lines.push(`   • /${s}`);
+    }
+    lines.push(`   Invoke with /<skill-name> in Claude Code.`);
+  } else if (skillsResult.skipped.length > 0) {
+    lines.push(`📚 Skills: already installed (${skillsResult.skipped.length} skill(s))`);
+  }
+
   // ── CLAUDE.md injection ───────────────────────────────────────────────────
   const injected = injectClaudeMdInstruction(dir);
   if (injected) {
@@ -243,6 +256,47 @@ export async function handleInitProject(stmts: Statements, input: InitProjectInp
   lines.push(`Use recall() to query accumulated project knowledge.`);
 
   return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Instalează Lucid skills în .claude/skills/ al proiectului
+// ---------------------------------------------------------------------------
+
+const PACKAGE_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "../..");
+
+interface SkillInstallResult {
+  installed: string[];
+  skipped: string[];
+}
+
+function installSkills(projectDir: string): SkillInstallResult {
+  const skillsSource = join(PACKAGE_ROOT, "skills");
+  const result: SkillInstallResult = { installed: [], skipped: [] };
+
+  if (!existsSync(skillsSource)) return result;
+
+  const skillDirs = readdirSync(skillsSource, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name);
+
+  for (const skillName of skillDirs) {
+    const srcSkillMd = join(skillsSource, skillName, "SKILL.md");
+    if (!existsSync(srcSkillMd)) continue;
+
+    const destDir = join(projectDir, ".claude", "skills", skillName);
+    const destFile = join(destDir, "SKILL.md");
+
+    if (existsSync(destFile)) {
+      result.skipped.push(skillName);
+      continue;
+    }
+
+    mkdirSync(destDir, { recursive: true });
+    writeFileSync(destFile, readFileSync(srcSkillMd, "utf-8"), "utf-8");
+    result.installed.push(skillName);
+  }
+
+  return result;
 }
 
 function buildChannelSummary(cfg: import("../security/alerts.js").AdminConfig): string {
