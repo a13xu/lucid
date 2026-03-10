@@ -53,7 +53,7 @@ Default DB path: `~/.claude/memory.db`
 6. "What do we know?"  → recall("query")          → knowledge graph search
 ```
 
-## Tools (20)
+## Tools (30)
 
 ### Memory
 | Tool | Description |
@@ -98,6 +98,20 @@ Default DB path: `~/.claude/memory.db`
 |---|---|
 | `coding_rules` | Get the 25 Golden Rules checklist — naming, single responsibility, file/function size, error handling, frontend component rules, architecture separation. |
 | `check_code_quality` | Analyze a file or snippet against the 25 Golden Rules. Detects file/function bloat, vague naming, deep nesting, dead code, and for React/Vue files: prop explosion, inline styles, fetch-in-component, direct DOM access. Complements `validate_file`. |
+
+### Web Dev Skills
+| Tool | Description |
+|---|---|
+| `generate_component` | Generate a complete component scaffold from a natural language description. Supports React (TSX/JSX) and Vue/Nuxt (`<script setup>` Composition API). Styling: Tailwind, CSS Modules, or none. |
+| `scaffold_page` | Generate a full page with layout, SEO head, and placeholder sections. Supports Nuxt (`useHead`), Next.js (`Metadata` API), and plain Vue. |
+| `seo_meta` | Generate complete SEO metadata: HTML meta tags, Open Graph, Twitter Card, and JSON-LD structured data (Article, Product, WebSite, WebPage). |
+| `accessibility_audit` | Audit HTML/JSX/Vue snippets for WCAG A/AA/AAA violations. Checks missing alt text, unlabeled inputs, empty buttons/links, positive tabindex, non-interactive click handlers, and more. Returns severity + corrected code. |
+| `api_client` | Generate a typed TypeScript async fetch function for a REST endpoint. Includes error handling (throws on non-2xx), full type aliases, and a usage example. Auth: Bearer, cookie, API key, or none. |
+| `test_generator` | Generate a complete test file covering happy path, edge cases, error path, and mock setup. Frameworks: Vitest, Jest, Playwright. Component testing: Vue Test Utils or React Testing Library. |
+| `responsive_layout` | Generate a mobile-first responsive layout from a wireframe description. Output: Tailwind utility classes, CSS Grid with named areas, or Flexbox + media queries. Container types: full, centered, sidebar. |
+| `security_scan` | Scan JS/TS/HTML/Vue for web security vulnerabilities: XSS, eval/injection, SQL injection, hardcoded secrets, open redirects, prototype pollution, path traversal, insecure CORS. Context-aware (frontend/backend/api). |
+| `design_tokens` | Generate a complete design token set from a brand color and mood. Produces 11-step color scales (50–950), neutral scale, semantic aliases, typography, spacing, radius, and shadows. Output: CSS variables, Tailwind config, or JSON. |
+| `perf_hints` | Analyze a component or page for Core Web Vitals issues (LCP, CLS, INP) and perf anti-patterns: missing image dimensions, render-blocking scripts, fetch-in-render, heavy click handlers, missing useMemo/computed, whole-library imports. |
 
 ## Token optimization in depth
 

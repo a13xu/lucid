@@ -47,6 +47,18 @@ import {
   handlePlanGet,    PlanGetSchema,
   handlePlanUpdateTask, PlanUpdateTaskSchema,
 } from "./tools/plan.js";
+import {
+  GenerateComponentSchema, handleGenerateComponent,
+  ScaffoldPageSchema,      handleScaffoldPage,
+  SeoMetaSchema,           handleSeoMeta,
+  AccessibilityAuditSchema, handleAccessibilityAudit,
+  ApiClientSchema,         handleApiClient,
+  TestGeneratorSchema,     handleTestGenerator,
+  ResponsiveLayoutSchema,  handleResponsiveLayout,
+  SecurityScanSchema,      handleSecurityScan,
+  DesignTokensSchema,      handleDesignTokens,
+  PerfHintsSchema,         handlePerfHints,
+} from "./tools/webdev/index.js";
 
 // ---------------------------------------------------------------------------
 // Init DB
@@ -439,6 +451,182 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["task_id", "status"],
       },
     },
+    // ── Web Dev Skills ───────────────────────────────────────────────────────
+    {
+      name: "generate_component",
+      description:
+        "Generate a complete component scaffold from a natural language description. " +
+        "Supports React (TSX/JSX) and Vue/Nuxt (Composition API + <script setup>). " +
+        "Styling options: Tailwind CSS, CSS Modules, or none.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          description: { type: "string", description: "Natural language description of the component" },
+          framework:   { type: "string", enum: ["react", "vue", "nuxt"], description: "Target framework" },
+          styling:     { type: "string", enum: ["tailwind", "css-modules", "none"], description: "Styling approach" },
+          typescript:  { type: "boolean", description: "Whether to use TypeScript" },
+        },
+        required: ["description", "framework", "styling", "typescript"],
+      },
+    },
+    {
+      name: "scaffold_page",
+      description:
+        "Generate a full page scaffold with layout, SEO head meta, and placeholder sections. " +
+        "Supports Nuxt (useHead), Next.js (Metadata API), and plain Vue.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          page_name:  { type: "string", description: "Page name (e.g. About, Dashboard)" },
+          framework:  { type: "string", enum: ["nuxt", "next", "vue"], description: "Target framework" },
+          sections:   { type: "array", items: { type: "string" }, description: "Section names (e.g. hero, features, footer)" },
+          seo_title:  { type: "string", description: "Optional SEO title" },
+        },
+        required: ["page_name", "framework", "sections"],
+      },
+    },
+    {
+      name: "seo_meta",
+      description:
+        "Generate complete SEO metadata for a page: HTML meta tags, Open Graph, Twitter Card, " +
+        "and JSON-LD structured data (Article, Product, WebSite, or WebPage).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          title:       { type: "string", description: "Page title" },
+          description: { type: "string", description: "Meta description (≤160 chars recommended)" },
+          keywords:    { type: "array", items: { type: "string" }, description: "SEO keywords" },
+          page_type:   { type: "string", enum: ["article", "product", "landing", "home"], description: "Page type for JSON-LD" },
+          url:         { type: "string", description: "Canonical page URL" },
+          image_url:   { type: "string", description: "OG/Twitter image URL" },
+        },
+        required: ["title", "description", "keywords", "page_type"],
+      },
+    },
+    {
+      name: "accessibility_audit",
+      description:
+        "Audit HTML, JSX, or Vue template snippets for WCAG accessibility violations. " +
+        "Checks: missing alt text, unlabeled inputs, empty buttons/links, positive tabindex, " +
+        "non-interactive click handlers, open-in-new-tab links, and more. " +
+        "Returns severity (critical/warning/info), WCAG criterion, and corrected code.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          code:        { type: "string", description: "HTML, JSX, or Vue snippet to audit" },
+          wcag_level:  { type: "string", enum: ["A", "AA", "AAA"], description: "WCAG conformance level" },
+          framework:   { type: "string", enum: ["html", "jsx", "vue"], description: "Code framework" },
+        },
+        required: ["code", "wcag_level", "framework"],
+      },
+    },
+    {
+      name: "api_client",
+      description:
+        "Generate a typed TypeScript async function for a REST API endpoint. " +
+        "Includes full types, error handling (throws on non-2xx), and a usage example. " +
+        "Auth strategies: Bearer token, cookie, API key, or none.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          endpoint:        { type: "string", description: "API endpoint path (e.g. /users/:id)" },
+          method:          { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+          request_schema:  { type: "string", description: "TypeScript type for request body" },
+          response_schema: { type: "string", description: "TypeScript type for response" },
+          auth:            { type: "string", enum: ["bearer", "cookie", "apikey", "none"] },
+          base_url_var:    { type: "string", description: "Env var name for base URL (e.g. NEXT_PUBLIC_API_URL)" },
+        },
+        required: ["endpoint", "method", "auth"],
+      },
+    },
+    {
+      name: "test_generator",
+      description:
+        "Generate a complete test file for a function, component, or API handler. " +
+        "Covers: happy path, edge cases (empty/null/boundary), error path, and mock setup. " +
+        "Frameworks: Vitest, Jest, or Playwright (e2e). " +
+        "Component testing: Vue Test Utils or React Testing Library.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          code:               { type: "string", description: "Source code to generate tests for" },
+          test_framework:     { type: "string", enum: ["vitest", "jest", "playwright"] },
+          test_type:          { type: "string", enum: ["unit", "integration", "e2e"] },
+          component_framework: { type: "string", enum: ["vue", "react", "none"] },
+        },
+        required: ["code", "test_framework", "test_type"],
+      },
+    },
+    {
+      name: "responsive_layout",
+      description:
+        "Generate a responsive mobile-first layout from a wireframe description. " +
+        "Outputs: Tailwind CSS utility classes, CSS Grid with named areas, or Flexbox with media queries. " +
+        "Container types: full-width, centered max-width, or sidebar layout.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          description: { type: "string", description: "Wireframe description (e.g. 'sidebar + main + right panel')" },
+          framework:   { type: "string", enum: ["tailwind", "css-grid", "flexbox"] },
+          breakpoints: { type: "array", items: { type: "string" }, description: "Breakpoint names (e.g. ['mobile', 'tablet', 'desktop'])" },
+          container:   { type: "string", enum: ["full", "centered", "sidebar"] },
+        },
+        required: ["description", "framework", "breakpoints"],
+      },
+    },
+    {
+      name: "security_scan",
+      description:
+        "Scan JavaScript/TypeScript/HTML/Vue code for common web security vulnerabilities. " +
+        "Detects: XSS (innerHTML, v-html, dangerouslySetInnerHTML), code injection (eval, new Function), " +
+        "SQL injection, hardcoded secrets, open redirects, prototype pollution, path traversal, " +
+        "render-blocking scripts, and insecure CORS. Context-aware: frontend vs backend vs API rules. " +
+        "Complements validate_file (logic drift) — this focuses on web security patterns.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          code:     { type: "string", description: "Code snippet to scan" },
+          language: { type: "string", enum: ["javascript", "typescript", "html", "vue"] },
+          context:  { type: "string", enum: ["frontend", "backend", "api"] },
+        },
+        required: ["code", "language", "context"],
+      },
+    },
+    {
+      name: "design_tokens",
+      description:
+        "Generate a complete design system token set from a brand color and mood. " +
+        "Produces: 11-step color scales (50–950), neutral scale, semantic color aliases, " +
+        "typography scale, spacing, border-radius, and shadow tokens. " +
+        "Output formats: CSS custom properties, Tailwind config, or JSON.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          brand_name:    { type: "string", description: "Brand or project name" },
+          primary_color: { type: "string", description: "Primary color as hex (#3B82F6) or name (blue)" },
+          mood:          { type: "string", enum: ["minimal", "bold", "playful", "corporate"] },
+          output_format: { type: "string", enum: ["css-variables", "tailwind-config", "json"] },
+        },
+        required: ["brand_name", "primary_color", "mood", "output_format"],
+      },
+    },
+    {
+      name: "perf_hints",
+      description:
+        "Analyze a component or page file for Core Web Vitals (CWV) and web performance issues. " +
+        "Detects: missing LCP image priority, images without dimensions (CLS), render-blocking scripts, " +
+        "fetch-in-render (TTFB), heavy click handlers (INP), missing useMemo/computed, " +
+        "whole-library imports, and inline style objects. Issues ranked by CWV metric impact.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          code:      { type: "string", description: "Component or page source code to analyze" },
+          framework: { type: "string", enum: ["react", "vue", "nuxt", "vanilla"] },
+          context:   { type: "string", enum: ["component", "page", "layout"] },
+        },
+        required: ["code", "framework", "context"],
+      },
+    },
   ],
 }));
 
@@ -498,6 +686,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "plan_list":        text = handlePlanList(stmts, PlanListSchema.parse(args)); break;
       case "plan_get":         text = handlePlanGet(stmts, PlanGetSchema.parse(args)); break;
       case "plan_update_task": text = handlePlanUpdateTask(stmts, PlanUpdateTaskSchema.parse(args)); break;
+
+      // Web Dev Skills
+      case "generate_component":   text = handleGenerateComponent(GenerateComponentSchema.parse(args)); break;
+      case "scaffold_page":        text = handleScaffoldPage(ScaffoldPageSchema.parse(args)); break;
+      case "seo_meta":             text = handleSeoMeta(SeoMetaSchema.parse(args)); break;
+      case "accessibility_audit":  text = handleAccessibilityAudit(AccessibilityAuditSchema.parse(args)); break;
+      case "api_client":           text = handleApiClient(ApiClientSchema.parse(args)); break;
+      case "test_generator":       text = handleTestGenerator(TestGeneratorSchema.parse(args)); break;
+      case "responsive_layout":    text = handleResponsiveLayout(ResponsiveLayoutSchema.parse(args)); break;
+      case "security_scan":        text = handleSecurityScan(SecurityScanSchema.parse(args)); break;
+      case "design_tokens":        text = handleDesignTokens(DesignTokensSchema.parse(args)); break;
+      case "perf_hints":           text = handlePerfHints(PerfHintsSchema.parse(args)); break;
 
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
