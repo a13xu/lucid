@@ -53,6 +53,7 @@ interface HookEntry {
 }
 
 const LUCID_MARKER = "Lucid: call sync_file";
+const LUCID_UPDATE_MARKER = "lucid-update-check";
 
 const LUCID_HOOK: HookEntry = {
   matcher: "Write|Edit|NotebookEdit",
@@ -64,7 +65,29 @@ const LUCID_HOOK: HookEntry = {
   ],
 };
 
-function installHook(dir: string): { installed: boolean; reason: string } {
+// SessionStart hook: checks npm registry and notifies if update is available.
+// Uses only Node.js built-in https module — no external dependencies required.
+const LUCID_UPDATE_HOOK = {
+  hooks: [
+    {
+      type: "command",
+      command:
+        `node -e "const h=require('https');` +
+        `h.get('https://registry.npmjs.org/@a13xu/lucid/latest',` +
+        `function(r){var d='';r.on('data',function(c){d+=c});` +
+        `r.on('end',function(){` +
+        `try{var v=JSON.parse(d).version;` +
+        `var s=require('child_process').execSync(` +
+        `'npm list -g @a13xu/lucid --depth=0 2>/dev/null',{encoding:'utf8'});` +
+        `var m=s.match(/lucid@([\\d.]+)/);` +
+        `if(m&&m[1]&&v!==m[1])` +
+        `console.log('[Lucid] Update available: v'+m[1]+' → v'+v+'. Call update_lucid().')}` +
+        `catch(e){}})}).on('error',function(){})" 2>/dev/null || true`,
+    },
+  ],
+};
+
+function installHooks(dir: string): { installed: boolean; reason: string } {
   const claudeDir = join(dir, ".claude");
   const settingsPath = join(claudeDir, "settings.json");
 
@@ -78,25 +101,39 @@ function installHook(dir: string): { installed: boolean; reason: string } {
   }
 
   const hooks = (settings["hooks"] ?? {}) as Record<string, HookEntry[]>;
-  const postToolUse: HookEntry[] = hooks["PostToolUse"] ?? [];
+  let changed = false;
 
-  // Detectează atât formatul vechi cât și cel nou
-  const alreadyInstalled = postToolUse.some((h) => {
+  // ── PostToolUse: sync_file reminder ──────────────────────────────────────
+  const postToolUse: HookEntry[] = hooks["PostToolUse"] ?? [];
+  const syncAlreadyInstalled = postToolUse.some((h) => {
     const cmd = h.command ?? h.hooks?.[0]?.command ?? "";
     return cmd.includes(LUCID_MARKER);
   });
+  if (!syncAlreadyInstalled) {
+    hooks["PostToolUse"] = [...postToolUse, LUCID_HOOK];
+    changed = true;
+  }
 
-  if (alreadyInstalled) {
+  // ── SessionStart: version check ───────────────────────────────────────────
+  const sessionStart: HookEntry[] = hooks["SessionStart"] ?? [];
+  const updateAlreadyInstalled = sessionStart.some((h) => {
+    const cmd = h.command ?? h.hooks?.[0]?.command ?? "";
+    return cmd.includes(LUCID_UPDATE_MARKER);
+  });
+  if (!updateAlreadyInstalled) {
+    hooks["SessionStart"] = [...sessionStart, LUCID_UPDATE_HOOK];
+    changed = true;
+  }
+
+  if (!changed) {
     return { installed: false, reason: "already installed" };
   }
 
-  hooks["PostToolUse"] = [...postToolUse, LUCID_HOOK];
   settings["hooks"] = hooks;
-
   mkdirSync(claudeDir, { recursive: true });
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
 
-  return { installed: true, reason: "hook added to .claude/settings.json" };
+  return { installed: true, reason: "hooks added to .claude/settings.json" };
 }
 
 // ---------------------------------------------------------------------------
@@ -150,12 +187,13 @@ export async function handleInitProject(stmts: Statements, input: InitProjectInp
 
   // ── Hook PostToolUse ──────────────────────────────────────────────────────
   lines.push(``);
-  const hookResult = installHook(dir);
+  const hookResult = installHooks(dir);
   if (hookResult.installed) {
-    lines.push(`🔗 Claude Code hook installed (.claude/settings.json)`);
-    lines.push(`   After every Write/Edit, you will see a reminder to call sync_file().`);
+    lines.push(`🔗 Claude Code hooks installed (.claude/settings.json)`);
+    lines.push(`   PostToolUse: reminder to call sync_file() after every Write/Edit`);
+    lines.push(`   SessionStart: auto-check for Lucid updates on session start`);
   } else {
-    lines.push(`🔗 Hook: ${hookResult.reason}`);
+    lines.push(`🔗 Hooks: ${hookResult.reason}`);
   }
 
   // ── Skills ────────────────────────────────────────────────────────────────

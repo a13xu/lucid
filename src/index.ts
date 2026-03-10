@@ -48,6 +48,9 @@ import {
   handlePlanUpdateTask, PlanUpdateTaskSchema,
 } from "./tools/plan.js";
 import {
+  UpdateLucidSchema, handleUpdateLucid, checkForUpdatesOnStartup, getCurrentVersion,
+} from "./tools/updater.js";
+import {
   GenerateComponentSchema, handleGenerateComponent,
   ScaffoldPageSchema,      handleScaffoldPage,
   SeoMetaSchema,           handleSeoMeta,
@@ -92,7 +95,7 @@ if (_embeddingUrl) {
 // ---------------------------------------------------------------------------
 
 const server = new Server(
-  { name: "lucid", version: "1.12.0" },
+  { name: "lucid", version: "1.13.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -451,6 +454,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["task_id", "status"],
       },
     },
+    // ── Updater ──────────────────────────────────────────────────────────────
+    {
+      name: "update_lucid",
+      description:
+        "Check for a newer version of Lucid on npm and update automatically. " +
+        "For global npm installs: runs npm install -g @a13xu/lucid@latest. " +
+        "For local source installs: shows git pull + npm run build instructions. " +
+        "After updating, restart Claude Code to load the new version.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          force: {
+            type: "boolean",
+            description: "Force reinstall even if already on latest version (default false)",
+          },
+        },
+      },
+    },
     // ── Web Dev Skills ───────────────────────────────────────────────────────
     {
       name: "generate_component",
@@ -687,6 +708,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "plan_get":         text = handlePlanGet(stmts, PlanGetSchema.parse(args)); break;
       case "plan_update_task": text = handlePlanUpdateTask(stmts, PlanUpdateTaskSchema.parse(args)); break;
 
+      // Updater
+      case "update_lucid": text = await handleUpdateLucid(UpdateLucidSchema.parse(args)); break;
+
       // Web Dev Skills
       case "generate_component":   text = handleGenerateComponent(GenerateComponentSchema.parse(args)); break;
       case "scaffold_page":        text = handleScaffoldPage(ScaffoldPageSchema.parse(args)); break;
@@ -719,4 +743,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-console.error("[lucid] Server started on stdio.");
+console.error(`[lucid] Server v${getCurrentVersion()} started on stdio.`);
+
+// Non-blocking — logs to stderr if update is available
+checkForUpdatesOnStartup().catch(() => {});
