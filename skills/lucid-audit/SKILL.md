@@ -1,53 +1,67 @@
 ---
 name: lucid-audit
-description: Run after writing or modifying code — validates logic correctness (Logic Guardian 5 passes) and code quality (25 Golden Rules) before marking work as done.
-argument-hint: "[file path or 'all']"
+description: MANDATORY before marking any task done — runs Logic Guardian + Code Quality checks. HARD-GATE blocks completion without validation.
+argument-hint: "[file path or 'all changed files']"
 ---
 
-# Lucid Code Audit
+<HARD-GATE>
+You are about to say "done", "fixed", "complete", or "implemented".
+STOP. You have NOT verified the code yet.
 
-Run this skill BEFORE marking any implementation as complete. It runs two complementary validators:
+Do NOT mark any task as done, do NOT commit, do NOT say the work is complete
+until you have run BOTH validators below and fixed all 🔴 CRITICAL issues.
 
-- **Logic Guardian** (`validate_file`) — detects LLM drift: logic inversions, null propagation, off-by-one, copy-paste mistakes
-- **Code Quality Guard** (`check_code_quality`) — detects structural issues: file/function size, vague naming, deep nesting, prop explosion, inline styles
+"It looks correct" is not verification. Run the tools.
+</HARD-GATE>
+
+## When to invoke
+
+**INVOKE when:** about to say done/fixed/complete/implemented, before committing, before creating a PR
+**DO NOT INVOKE for:** read-only tasks, pure research, config changes with no logic
 
 ## Steps
+
+```dot
+digraph lucid_audit {
+    "About to say done?" -> "validate_file(path)";
+    "validate_file(path)" -> "Critical issues?";
+    "Critical issues?" -> "Fix issues" [label="yes 🔴"];
+    "Fix issues" -> "validate_file(path)";
+    "Critical issues?" -> "check_code_quality(path)" [label="no ✓"];
+    "check_code_quality(path)" -> "HIGH issues?";
+    "HIGH issues?" -> "Fix if safe" [label="yes 🟠"];
+    "Fix if safe" -> "Mark done ✓";
+    "HIGH issues?" -> "Mark done ✓" [label="no ✓"];
+}
+```
 
 ### 1. Validate logic correctness
 ```
 validate_file(path="<file you wrote or modified>")
 ```
-Fix any 🔴 CRITICAL issues before continuing.
+Fix every 🔴 CRITICAL issue. Re-run until clean.
 
 ### 2. Validate code quality
 ```
 check_code_quality(path="<same file>")
 ```
-Fix any 🔴 HIGH severity issues. Address 🟠 MEDIUM where practical.
+Fix 🔴 HIGH severity issues. Address 🟠 MEDIUM where practical.
 
-### 3. If unsure about a snippet before writing it to disk
-```
-check_drift(code="<your code>", language="typescript")
-```
-
-### 4. Get the full 5-pass mental checklist
+### 3. For complex logic — get the full checklist
 ```
 get_checklist()
 ```
-Use this when changes are complex or involve critical business logic.
+Run all 5 mental passes before marking done.
+
+### 4. Pre-write validation (before writing to disk)
+```
+check_drift(code="<your code snippet>", language="typescript")
+```
 
 ## Severity guide
 
 | Icon | Level | Action |
 |---|---|---|
-| 🔴 | Critical/High | Fix immediately — do not ship |
-| 🟠 | Medium/Warning | Fix if not risky refactor |
+| 🔴 | Critical/High | Fix immediately — do not proceed |
+| 🟠 | Medium | Fix if the refactor is safe |
 | 🔵 | Low/Info | Note for future cleanup |
-
-## What each tool catches
-
-| Tool | Catches |
-|---|---|
-| `validate_file` | Logic inversions, silent exceptions, null propagation, type confusion, stale closures |
-| `check_code_quality` | Files >500 lines, functions >100 lines, vague names, nesting >4 levels, dead code, React/Vue component anti-patterns |
-| `check_drift` | Same as validate_file but on inline snippets — use before writing |
