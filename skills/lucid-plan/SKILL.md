@@ -1,60 +1,46 @@
 ---
 name: lucid-plan
-description: Create and track an implementation plan before writing any code — use Lucid's planning tools to define user story, ordered tasks, and test criteria.
+description: MANDATORY before writing code for any non-trivial feature — creates a persisted plan with tasks. HARD-GATE: no coding without a plan.
 argument-hint: "[feature or task description]"
 ---
 
-# Lucid Planning Workflow
+<HARD-GATE>
+You are about to write code for a feature or fix.
+STOP. Create a plan first. Plans survive session restarts.
+Do NOT write implementation code until a plan exists and tasks are defined.
+</HARD-GATE>
 
-Use this skill BEFORE writing code for any non-trivial feature. Plans are persisted in the Lucid DB and survive session restarts.
+## When to invoke
+
+**INVOKE when:** implementing a feature, fixing a non-trivial bug, any task with 3+ steps
+**DO NOT INVOKE for:** single-line fixes, config changes, documentation-only tasks
 
 ## Steps
 
 ### 1. Create the plan
 ```
 plan_create(
-  title="<short title>",
-  description="<what this plan accomplishes>",
+  title="<short descriptive title>",
+  description="<what this accomplishes>",
   user_story="As a <user>, I want <goal>, so that <benefit>.",
   tasks=[
-    { title: "Task 1", description: "...", test_criteria: "How to verify done" },
+    { title: "Task 1", description: "...", test_criteria: "How to verify it's done" },
     { title: "Task 2", description: "...", test_criteria: "..." },
   ]
 )
 ```
 Returns a `plan_id` and task IDs (format: `planId * 100 + sequence`).
 
-### 2. Work through tasks
-For each task, mark it in progress when you start:
+### 2. Mark tasks in progress / done as you work
 ```
 plan_update_task(task_id=101, status="in_progress")
+plan_update_task(task_id=101, status="done", note="Decision made: used X instead of Y")
 ```
 
-When done, mark it complete (optionally add a note):
+### 3. Resume a session
 ```
-plan_update_task(task_id=101, status="done", note="Used useFetch instead of axios")
-```
-
-Plan auto-completes when all tasks reach `done`.
-
-### 3. Resume a session — check plan status
-```
-plan_list()                  # see all active plans
-plan_get(plan_id=1)          # see full details + task status
+plan_list()           # all active plans
+plan_get(plan_id=1)   # full details + task status
 ```
 
-## Task statuses
-
-| Status | When to use |
-|---|---|
-| `pending` | Not started yet |
-| `in_progress` | Currently working on it |
-| `done` | Completed and verified |
-| `blocked` | Waiting on external dependency |
-
-## Tips
-
-- Define `test_criteria` clearly — it becomes your acceptance test
-- Use `plan_get` when resuming to quickly re-orient yourself
-- Keep tasks small (1–4 hours each); use more tasks rather than fewer
-- Notes are append-only — use them to document decisions made during implementation
+## Task statuses: `pending` → `in_progress` → `done` | `blocked`

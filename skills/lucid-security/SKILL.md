@@ -1,59 +1,35 @@
 ---
 name: lucid-security
-description: Run a full security review on a file or snippet — combines web vulnerability scanning (XSS, injection, secrets) with LLM drift detection before shipping code.
-argument-hint: "[file path or paste code]"
+description: Run before merging any code that handles user input, auth, or external data — security scan + drift check for injection, XSS, and credential exposure.
+argument-hint: "[file path or directory]"
 ---
 
-# Lucid Security Review
+<HARD-GATE>
+Before merging code that:
+- Handles user input (forms, query params, file uploads)
+- Implements auth, tokens, sessions, or permissions
+- Calls external APIs or parses external data
+- Manages files or runs shell commands
 
-Run this skill before shipping any code that handles user input, authentication, file access, or external data.
+Run this skill. No exceptions.
+</HARD-GATE>
 
 ## Steps
 
-### 1. Scan for web security vulnerabilities
+### 1. Security scan
 ```
-security_scan(
-  code="<file contents or snippet>",
-  language="typescript",    # javascript | typescript | html | vue
-  context="backend"         # frontend | backend | api
-)
-```
-Detects: XSS vectors, eval/new Function, SQL injection via string concat, hardcoded secrets/keys, open redirects, prototype pollution, path traversal, insecure CORS.
-
-### 2. Scan for logic errors (LLM drift)
-```
-validate_file(path="<file path>")
-```
-Catches security-adjacent logic bugs: wrong condition direction, silent exception swallowing, null propagation into auth checks.
-
-### 3. For frontend components — audit accessibility too
-```
-accessibility_audit(code="<template or JSX>", wcag_level="AA", framework="vue")
+security_scan(code="<file contents or snippet>", language="typescript", context="backend")
 ```
 
-## Severity guide
+### 2. Drift check for security-sensitive snippets
+```
+check_drift(code="<auth/input-handling code>", language="typescript")
+```
 
-| Icon | Severity | Action |
-|---|---|---|
-| 🔴 Critical | XSS, eval, hardcoded secret, SQL injection | Fix before any commit |
-| 🟠 High | Open redirect, path traversal, prototype pollution | Fix before merge |
-| 🟡 Medium | Wildcard CORS, missing CSRF protection | Fix before production |
-| 🔵 Low | console.log, minor info leakage | Fix when convenient |
+### 3. Fix all CRITICAL issues before merging
 
-## Common patterns to watch
-
-| Pattern | Risk |
+| Severity | Action |
 |---|---|
-| `element.innerHTML = userInput` | XSS — use `textContent` or DOMPurify |
-| `eval(...)` / `new Function(...)` | Code injection |
-| `const key = "sk-abc123..."` | Hardcoded secret — move to env var |
-| `res.redirect(req.query.url)` | Open redirect — validate against allowlist |
-| `readFile(req.params.filename)` | Path traversal — use `path.resolve` + bounds check |
-| `Access-Control-Allow-Origin: *` | Overly permissive CORS |
-
-## Note
-
-Static scanning finds patterns, not all vulnerabilities. Complement with:
-- Manual code review for business logic flaws
-- DAST (dynamic testing) for runtime issues
-- Dependency audit: `npm audit` / `pip-audit`
+| 🔴 CRITICAL | Block merge — fix immediately |
+| 🟠 HIGH | Fix before merge |
+| 🔵 MEDIUM/LOW | Track, fix in follow-up |

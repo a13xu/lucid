@@ -1,123 +1,37 @@
 ---
 name: lucid-webdev
-description: Web development code generation tools — generate components, pages, SEO meta, API clients, tests, layouts, design tokens, and analyze accessibility and performance.
-argument-hint: "[component | page | seo | a11y | api | test | layout | security | tokens | perf]"
+description: Use for web development tasks — generates components, pages, audits, API clients, and performance hints via Lucid's 10 web dev tools.
+argument-hint: "[what you are building: component/page/api/audit]"
 ---
 
-# Lucid Web Dev Tools
+<HARD-GATE>
+Before building any web component, page, or API client from scratch:
+call the relevant generator tool first. Do not write boilerplate manually.
+</HARD-GATE>
 
-10 tools for common web development tasks. Pick the one that matches what you need:
+## When to invoke
 
-## Component & Page Generation
+**INVOKE when:** building UI components, scaffolding pages, writing API clients, running accessibility/security/performance audits
+**DO NOT INVOKE for:** backend-only logic with no web layer
 
-### Generate a component
-```
-generate_component(
-  description="user profile card with avatar and edit button",
-  framework="vue",          # react | vue | nuxt
-  styling="tailwind",       # tailwind | css-modules | none
-  typescript=true
-)
-```
+## Available tools
 
-### Generate a page scaffold
-```
-scaffold_page(
-  page_name="ProductDetail",
-  framework="nuxt",          # nuxt | next | vue
-  sections=["hero", "specs", "reviews", "cta"],
-  seo_title="Product Detail"
-)
-```
+| Task | Tool |
+|---|---|
+| Generate a React/Vue component | `generate_component(description, framework, styling, typescript)` |
+| Scaffold a full page | `scaffold_page(page_name, framework, sections, seo_title)` |
+| SEO meta tags | `seo_meta(title, description, keywords, page_type, url, image_url)` |
+| Accessibility audit | `accessibility_audit(code, wcag_level, framework)` |
+| API client | `api_client(endpoint, method, response_schema, auth, base_url_var)` |
+| Test scaffolding | `test_generator(code, test_framework, test_type, component_framework)` |
+| Responsive layout | `responsive_layout(description, framework, breakpoints, container)` |
+| Security scan | `security_scan(code, language, context)` |
+| Design tokens | `design_tokens(brand_name, primary_color, mood, output_format)` |
+| Performance hints | `perf_hints(code, framework, context)` |
 
-## SEO & Accessibility
+## Workflow
 
-### Generate SEO metadata
-```
-seo_meta(
-  title="Buy Widgets — Best Price",
-  description="Shop our range of premium widgets with free delivery.",
-  keywords=["widgets", "buy widgets", "widget shop"],
-  page_type="product",       # article | product | landing | home
-  url="https://example.com/widgets",
-  image_url="https://example.com/og/widgets.jpg"
-)
-```
-Returns: HTML meta tags + Open Graph + Twitter Card + JSON-LD structured data.
-
-### Audit accessibility (WCAG)
-```
-accessibility_audit(
-  code="<your HTML/JSX/Vue snippet>",
-  wcag_level="AA",           # A | AA | AAA
-  framework="vue"            # html | jsx | vue
-)
-```
-Returns: violations with severity (critical/warning/info), WCAG criterion, and corrected code.
-
-## API & Testing
-
-### Generate a typed API client
-```
-api_client(
-  endpoint="/users/:id",
-  method="GET",              # GET | POST | PUT | PATCH | DELETE
-  response_schema="{ id: string; name: string; email: string }",
-  auth="bearer",             # bearer | cookie | apikey | none
-  base_url_var="NEXT_PUBLIC_API_URL"
-)
-```
-
-### Generate tests
-```
-test_generator(
-  code="<your function or component source>",
-  test_framework="vitest",   # vitest | jest | playwright
-  test_type="unit",          # unit | integration | e2e
-  component_framework="vue"  # vue | react | none
-)
-```
-
-## Layout & Design
-
-### Generate a responsive layout
-```
-responsive_layout(
-  description="sidebar left 260px, main content, right panel 240px",
-  framework="tailwind",      # tailwind | css-grid | flexbox
-  breakpoints=["mobile", "tablet", "desktop"],
-  container="sidebar"        # full | centered | sidebar
-)
-```
-
-### Generate design tokens
-```
-design_tokens(
-  brand_name="Acme",
-  primary_color="#6366F1",   # hex or name (blue, green, etc.)
-  mood="minimal",            # minimal | bold | playful | corporate
-  output_format="css-variables"  # css-variables | tailwind-config | json
-)
-```
-
-## Security & Performance
-
-### Scan for security vulnerabilities
-```
-security_scan(
-  code="<your code snippet>",
-  language="typescript",     # javascript | typescript | html | vue
-  context="frontend"         # frontend | backend | api
-)
-```
-Detects: XSS, eval/injection, hardcoded secrets, SQL injection, open redirects, CORS issues.
-
-### Analyze Core Web Vitals issues
-```
-perf_hints(
-  code="<your component or page source>",
-  framework="vue",           # react | vue | nuxt | vanilla
-  context="page"             # component | page | layout
-)
-```
-Detects: missing image dimensions (CLS), render-blocking scripts (FCP), fetch-in-render (TTFB), heavy click handlers (INP), missing useMemo/computed.
+1. Call the relevant generator/auditor tool
+2. Review output → adapt to project conventions
+3. `sync_file(path="<generated file>")` after saving
+4. Run /lucid-audit before marking done
