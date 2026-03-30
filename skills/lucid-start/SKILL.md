@@ -4,7 +4,7 @@ description: MANDATORY at every session start and before any coding task — loa
 argument-hint: "[optional: what you are about to work on]"
 ---
 
-<EXTREMELY-IMPORTANT>
+<HARD-GATE>
 You MUST complete ALL steps below BEFORE:
 - Reading any source file
 - Writing or editing any code
@@ -12,7 +12,7 @@ You MUST complete ALL steps below BEFORE:
 - Creating any plan or task
 
 This is not optional. There are no exceptions. "I'll do it after" is not acceptable.
-</EXTREMELY-IMPORTANT>
+</HARD-GATE>
 
 ## Steps (all mandatory, in order)
 
@@ -31,10 +31,10 @@ recall(query="project overview architecture")
 ```
 get_context(query="<describe what you are about to work on>", maxTokens=4000)
 ```
-Skip only if the user's request is purely conversational (no code involved).
+If the user's request involves code, call get_context. For purely conversational exchanges with zero code involvement, this step may be omitted.
 
 ### 4. Announce readiness
-Say: "✓ Lucid active — context loaded ([N] files)"
+Say: "✓ Lucid active — context loaded"
 
 ---
 
@@ -53,13 +53,7 @@ If you modified multiple files (refactor, git pull): call `sync_project()` inste
 
 ## Before marking any task as done
 
-Run `lucid-audit` before saying "done", "fixed", "complete", or "implemented":
-```
-validate_file(path="<file>")
-check_code_quality(path="<file>")
-```
-
-Fix all 🔴 CRITICAL issues before proceeding.
+Run /lucid-audit before saying "done", "fixed", "complete", or "implemented".
 
 ---
 
