@@ -4,11 +4,11 @@
 [![npm downloads](https://img.shields.io/npm/dm/@a13xu/lucid)](https://www.npmjs.com/package/@a13xu/lucid)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> **MCP server for Claude Code** — persistent memory, smart code indexing, and code quality validation. Works out of the box with zero configuration.
+> **MCP server for Claude Code** — persistent memory, smart code indexing, model selection, and code quality validation. Works out of the box with zero configuration.
 
 Token-efficient memory, code indexing, and validation for Claude Code agents — backed by **SQLite + FTS5**.
 
-Stores a persistent knowledge graph (entities, relations, observations), indexes source files as compressed binary with change detection, retrieves minimal relevant context via TF-IDF or Qdrant, and validates code for LLM drift patterns. Supports TypeScript, JavaScript, Python, **Vue, Nuxt**.
+Stores a persistent knowledge graph (entities, relations, observations), indexes source files as compressed binary with change detection, retrieves minimal relevant context via TF-IDF or Qdrant, and validates code for LLM drift patterns. Supports TypeScript, JavaScript, Python, **Vue, Nuxt**. Optional **LLMLingua-2 semantic compression** reduces context tokens by 30–70% while preserving meaning.
 
 ## Install
 
@@ -45,15 +45,16 @@ Default DB path: `~/.claude/memory.db`
 ## Quick start
 
 ```
-1. "Index this project" → init_project()        → scans CLAUDE.md, package.json, src/**
-2. Write code          → sync_file(path)         → compressed + hashed + diff stored
-3. "What's relevant?"  → get_context("auth flow") → TF-IDF ranked skeletons, ~500 tokens
-4. "What changed?"     → get_recent(hours=2)      → line diffs of recent edits
-5. "Where is X used?"  → grep_code("X")           → matching lines only, ~30 tokens
-6. "What do we know?"  → recall("query")          → knowledge graph search
+1. "Index this project" → init_project()               → scans CLAUDE.md, package.json, src/**
+2. Write code           → sync_file(path)               → compressed + hashed + diff stored
+3. "What's relevant?"  → smart_context("auth flow")    → recall + code in one call, adaptive budget
+4. "What model?"       → suggest_model("refactor auth") → haiku (lookup) or sonnet (reasoning)
+5. "What changed?"     → get_recent(hours=2)            → line diffs of recent edits
+6. "Where is X used?"  → grep_code("X")                → matching lines only, ~30 tokens
+7. "What do we know?"  → recall("query")               → knowledge graph search
 ```
 
-## Tools (30)
+## Tools (37)
 
 ### Memory
 | Tool | Description |
@@ -76,8 +77,11 @@ Default DB path: `~/.claude/memory.db`
 ### Token optimization
 | Tool | Description |
 |---|---|
-| `get_context` | **Smart context retrieval.** Ranks all indexed files by TF-IDF relevance (or Qdrant vector search if `QDRANT_URL` is set), applies recency boost, returns skeletons (imports + signatures only) for large files. Respects `maxContextTokens` budget. |
+| `smart_context` | **Recommended entry point.** Combines `recall()` (knowledge graph) + `get_context()` (code files) in one call. Adaptive token budget: `simple`=2000, `moderate`=6000, `complex`=12000. Logs an experience for `reward()`/`penalize()` feedback. |
+| `suggest_model` | Classify task complexity → recommend Claude model. Returns `{ model, model_id, reasoning, context_budget }`. Simple lookups → Haiku; reasoning/code → Sonnet. Call at the start of any workflow. |
+| `get_context` | **Classic code context.** Ranks indexed files by TF-IDF (or Qdrant), applies recency boost, returns skeletons for large files. Respects `maxContextTokens` budget. |
 | `get_recent` | Return files modified in the last N hours with line-level diffs. |
+| `compress_text` | Compress any text using LLMLingua-2 semantic compression. Returns compressed text + stats (ratio, tokens saved). Model downloads ~700MB on first use. |
 
 ### Logic Guardian
 | Tool | Description |
@@ -86,11 +90,19 @@ Default DB path: `~/.claude/memory.db`
 | `check_drift` | Analyze a code snippet inline without saving to disk. |
 | `get_checklist` | Return the full 5-pass validation protocol (Logic Trace, Contract Verification, Stupid Mistakes, Integration Sanity, Explain It). |
 
+### Plans
+| Tool | Description |
+|---|---|
+| `plan_create` | Create a development plan with title, description, and tasks. Returns plan ID. |
+| `plan_list` | List all plans with status summary (total/done/in-progress tasks). |
+| `plan_get` | Get full plan details including all tasks and their status. |
+| `plan_update_task` | Update a task's status (`todo` → `in_progress` → `done`) and optionally add notes. |
+
 ### Reward system
 | Tool | Description |
 |---|---|
-| `reward` | Signal that the last `get_context()` result was helpful (+1). Rewarded files rank higher in future similar queries. |
-| `penalize` | Signal that the last `get_context()` result was unhelpful (-1). Penalized files rank lower in future queries. |
+| `reward` | Signal that the last `smart_context()`/`get_context()` result was helpful (+1). Rewarded files rank higher in future similar queries. |
+| `penalize` | Signal that the last result was unhelpful (-1). Penalized files rank lower. Accepts optional `note` to log what was missing. |
 | `show_rewards` | Show top rewarded experiences and most rewarded files. Rewards decay exponentially (half-life ~14 days). |
 
 ### Code Quality Guard
@@ -115,7 +127,31 @@ Default DB path: `~/.claude/memory.db`
 
 ## Token optimization in depth
 
-### How `get_context` works
+### How `smart_context` works (recommended)
+
+```
+query: "auth middleware"
+         ↓
+  1. recall(query)  — knowledge graph search (entities, relations)
+         ↓
+  2. TF-IDF score all indexed files against query
+     (or Qdrant top-k if QDRANT_URL is set)
+         ↓
+  3. Boost recently-modified files (+0.3 score)
+     Boost rewarded files (+0.25 score, decayed)
+         ↓
+  4. For each file within token budget:
+       file < maxTokensPerFile  → return full source
+       file > maxTokensPerFile  → return skeleton only
+                                   (imports + signatures + TODOs)
+                                   + relevant fragments around query terms
+         ↓
+  5. Optional: LLMLingua-2 compression (if enabled in config)
+         ↓
+  output: merged knowledge + code — budget: 2k/6k/12k by task_type
+```
+
+### How `get_context` works (classic)
 
 ```
 query: "auth middleware"
@@ -183,6 +219,32 @@ Or in `.mcp.json`:
 
 Falls back to TF-IDF automatically if Qdrant is unreachable.
 
+### Semantic compression (optional)
+
+LLMLingua-2 (`microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank`) identifies and drops semantically unimportant tokens before returning context to Claude — and before generating Qdrant embeddings.
+
+Enable in `lucid.config.json`:
+
+```json
+{
+  "semanticCompression": {
+    "enabled": true,
+    "ratio": 0.5,
+    "minLength": 300,
+    "applyToEmbeddings": true
+  }
+}
+```
+
+| Key | Default | Description |
+|---|---|---|
+| `enabled` | `false` | Opt-in — model downloads ~700MB on first use |
+| `ratio` | `0.5` | Fraction of tokens to keep (0.3 = keep 30%) |
+| `minLength` | `300` | Skip compression for texts shorter than this |
+| `applyToEmbeddings` | `true` | Also compress chunk text before Qdrant embedding |
+
+Model is cached in `~/.lucid/models/` after first download. Falls back to uncompressed text on any error — safe to enable unconditionally.
+
 ### Configuration (`lucid.config.json`)
 
 Create in your project root to customize behavior:
@@ -191,9 +253,13 @@ Create in your project root to customize behavior:
 {
   "whitelistDirs": ["src", "backend", "api"],
   "blacklistDirs": ["migrations", "fixtures"],
-  "maxTokensPerFile": 400,
-  "maxContextTokens": 6000,
-  "recentWindowHours": 12
+  "maxTokensPerFile": 600,
+  "maxContextTokens": 8000,
+  "recentWindowHours": 48,
+  "semanticCompression": {
+    "enabled": false,
+    "ratio": 0.5
+  }
 }
 ```
 
@@ -201,9 +267,9 @@ Create in your project root to customize behavior:
 |---|---|---|
 | `whitelistDirs` | — | Only index/return files from these dirs |
 | `blacklistDirs` | — | Extra dirs to skip (merged with built-in skips) |
-| `maxTokensPerFile` | `400` | Files above this get skeleton treatment |
-| `maxContextTokens` | `4000` | Total token budget for `get_context` |
-| `recentWindowHours` | `24` | "Recently touched" threshold |
+| `maxTokensPerFile` | `600` | Files above this get skeleton treatment |
+| `maxContextTokens` | `8000` | Total token budget for `get_context` |
+| `recentWindowHours` | `48` | "Recently touched" threshold |
 
 ## Why no vectors by default?
 
@@ -237,6 +303,63 @@ TF-IDF is fast, deterministic, and requires zero external services. Qdrant is av
 ## Relation types
 `uses` · `depends_on` · `created_by` · `part_of` · `replaced_by` · `conflicts_with` · `tested_by`
 
+## HTTP daemon & auto-sync
+
+Lucid can run as a background HTTP daemon (port 7821) for auto-syncing files without Claude's cooperation.
+
+```bash
+# Start daemon (watches for sync requests, serves REST API)
+lucid watch
+
+# With HTTP server
+lucid watch --http
+
+# Check status
+lucid status
+
+# Stop
+lucid stop
+```
+
+### REST API (when `--http` is active)
+
+| Endpoint | Description |
+|---|---|
+| `POST /sync` `{ path }` | Sync a single file |
+| `POST /sync-project` `{ directory? }` | Sync entire project |
+| `GET /context?q=<query>` | Get context via HTTP |
+| `POST /validate` `{ path }` | Validate file for drift |
+| `GET /health` | Daemon health check |
+
+### Auto-sync hook (`lucid-sync`)
+
+`init_project` installs a Claude Code `PostToolUse` hook that calls `lucid-sync` after every file write/edit. The sync binary:
+
+1. Tries HTTP sync (500ms timeout, if daemon running)
+2. Falls back to direct SQLite sync (no daemon needed)
+
+This keeps the knowledge graph current automatically — without relying on Claude remembering to call `sync_file`.
+
+## Skills enforcement
+
+Lucid ships **enforcement skills** that install globally into `~/.claude/skills/` and activate in every project:
+
+| Skill | Purpose |
+|---|---|
+| `lucid-start` | Session start — `get_recent` + `smart_context` before any coding |
+| `lucid-context` | Pre-task context loading — `suggest_model` + `smart_context` |
+| `lucid-audit` | Pre-done gate — validate + check drift before marking complete |
+| `lucid-plan` | Planning workflow |
+| `lucid-sync` | Post-edit sync reminder |
+| `lucid-webdev` | Web dev workflow with context |
+
+All skills use `<HARD-GATE>` blocks that prevent proceeding until required tools are called.
+
+Install globally:
+```bash
+init_project()   # installs skills to ~/.claude/skills/ automatically
+```
+
 ## Debugging
 
 ```bash
@@ -244,7 +367,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},
   | npx @a13xu/lucid
 ```
 
-In Claude Code: run `/mcp` — you should see `lucid` with 20 tools.
+In Claude Code: run `/mcp` — you should see `lucid` with 37 tools.
 
 ## Contributing
 
@@ -260,8 +383,11 @@ Bug reports and pull requests are welcome on [GitHub](https://github.com/a13xu/l
 - **Runtime:** Node.js 18+, TypeScript, ES modules
 - **MCP SDK:** `@modelcontextprotocol/sdk`
 - **Database:** `better-sqlite3` (synchronous, WAL mode)
-- **Compression:** Node.js built-in `zlib` (deflate level 9)
+- **Compression:** Node.js built-in `zlib` (deflate level 9) + LLMLingua-2 semantic compression (optional)
 - **Hashing:** SHA-256 via `crypto` (change detection)
 - **Ranking:** TF-IDF (built-in) or Qdrant (optional, via REST)
+- **Semantic compression:** `@huggingface/transformers` (ONNX Runtime, q8 quantization)
+- **HTTP daemon:** Express 5 on port 7821 (optional)
+- **File watcher:** `chokidar`
 - **Validation:** `zod`
 - **Transport:** stdio
