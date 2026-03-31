@@ -1,12 +1,12 @@
 ---
 name: lucid-context
-description: Use BEFORE starting any coding task — retrieves relevant context via TF-IDF retrieval. HARD-GATE: do not read files manually before calling get_context.
+description: Use BEFORE starting any coding task — retrieves relevant context via smart_context (code + knowledge graph). HARD-GATE: do not read files manually before calling smart_context.
 argument-hint: "[what you are working on]"
 ---
 
 <HARD-GATE>
 Do NOT open any source file, read any code, or start implementation
-until you have called get_context and reviewed the result.
+until you have called smart_context and reviewed the result.
 Reading files manually when Lucid is available wastes tokens and misses context.
 </HARD-GATE>
 
@@ -19,8 +19,9 @@ Reading files manually when Lucid is available wastes tokens and misses context.
 
 ```dot
 digraph lucid_context {
-    "Describe task" -> "call get_context";
-    "call get_context" -> "Result relevant?";
+    "Describe task" -> "suggest_model";
+    "suggest_model" -> "call smart_context";
+    "call smart_context" -> "Result relevant?";
     "Result relevant?" -> "call reward()" [label="yes"];
     "Result relevant?" -> "call penalize()" [label="no — note what was missing"];
     "reward()" -> "Start coding";
@@ -28,14 +29,20 @@ digraph lucid_context {
 }
 ```
 
-### 1. Call get_context
+### 0. Get model recommendation
 ```
-get_context(query="<concise description of what you are working on>", maxTokens=4000)
+suggest_model(task_description="<concise description of what you are working on>")
+```
+Say: **"Using [model] — [reasoning]"**
+
+### 1. Call smart_context
+```
+smart_context(query="<concise description of what you are working on>", task_type="moderate")
 ```
 
-Use `dirs` to narrow scope when you know the area:
+Use `dirs` to narrow scope and `task_type` to adjust budget:
 ```
-get_context(query="...", dirs=["src/api"], maxTokens=4000)
+smart_context(query="...", dirs=["src/api"], task_type="simple")
 ```
 
 ### 2. Review results and give feedback

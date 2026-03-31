@@ -16,24 +16,25 @@ This is not optional. There are no exceptions. "I'll do it after" is not accepta
 
 ## Steps (all mandatory, in order)
 
+### 0. Get model recommendation
+```
+suggest_model(task_description="<paste the user's task description>")
+```
+Say: **"Using [model] — [reasoning]"** then proceed.
+
 ### 1. Check what changed recently
 ```
-get_recent(hours=24)
+get_recent(hours=48)
 ```
 This shows files modified since your last session. Review the list.
 
-### 2. Reload project overview
+### 2. If working on a specific task — load relevant context
 ```
-recall(query="project overview architecture")
+smart_context(query="<describe what you are about to work on>", task_type="moderate")
 ```
+If the user's request involves code, call smart_context. For purely conversational exchanges with zero code involvement, this step may be omitted.
 
-### 3. If working on a specific task — load relevant context
-```
-get_context(query="<describe what you are about to work on>", maxTokens=4000)
-```
-If the user's request involves code, call get_context. For purely conversational exchanges with zero code involvement, this step may be omitted.
-
-### 4. Announce readiness
+### 3. Announce readiness
 Say: "✓ Lucid active — context loaded"
 
 ---

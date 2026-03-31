@@ -9,6 +9,7 @@ import type { Statements, FileContentRow } from "../database.js";
 import type { ResolvedConfig } from "../config.js";
 import { getQdrantConfig } from "../config.js";
 import { getFileRewardsMap } from "../memory/experience.js";
+import { tryCompressTextSemantic } from "../compression/semantic.js";
 
 // ---------------------------------------------------------------------------
 // Token estimation (1 token ≈ 4 chars is the standard heuristic)
@@ -236,6 +237,16 @@ export async function assembleContext(
     }
 
     if (isRecent) reason += " +recent";
+
+    // Semantic compression — applied after skeleton/full decision, before token counting
+    if (cfg.semanticCompression?.enabled) {
+      content = await tryCompressTextSemantic(
+        content,
+        cfg.semanticCompression.ratio ?? 0.5,
+        cfg.semanticCompression.minLength ?? 300
+      );
+      reason += " +compressed";
+    }
 
     const contentTokens = estimateTokens(content);
     if (contentTokens < 10) { skippedFiles++; continue; }

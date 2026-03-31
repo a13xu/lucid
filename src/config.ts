@@ -15,6 +15,21 @@ export interface LucidConfig {
   recentWindowHours?: number;
   /** Security guard configuration */
   security?: SecurityConfig;
+  /**
+   * Semantic compression via LLMLingua-2 (microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank).
+   * When enabled, file content is compressed before being returned to Claude and before Qdrant embedding.
+   * Model is downloaded on first use (~700MB) and cached in ~/.lucid/models/.
+   */
+  semanticCompression?: {
+    /** Enable semantic compression (default: false — opt-in) */
+    enabled?: boolean;
+    /** Target compression ratio: 0.3 = keep 30%, 0.5 = keep 50% (default: 0.5) */
+    ratio?: number;
+    /** Skip compression for texts shorter than this in chars (default: 300) */
+    minLength?: number;
+    /** Also compress text before Qdrant embedding generation (default: true when enabled) */
+    applyToEmbeddings?: boolean;
+  };
   /** Optional Qdrant vector search (falls back to TF-IDF if not configured) */
   qdrant?: {
     url: string;           // e.g. "http://localhost:6333"

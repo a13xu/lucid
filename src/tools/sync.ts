@@ -7,6 +7,8 @@ import { indexProject, type IndexResult } from "../indexer/project.js";
 import { computeDiff } from "../retrieval/context.js";
 import { decompress } from "../store/content.js";
 import { implicitRewardFromSync } from "../memory/experience.js";
+import { indexFileInQdrant } from "../retrieval/qdrant.js";
+import { loadConfig, getQdrantConfig } from "../config.js";
 
 const SUPPORTED_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".vue", ".py", ".go", ".rs"]);
 
@@ -61,6 +63,13 @@ export function handleSyncFile(stmts: Statements, args: z.infer<typeof SyncFileS
   // Implicit reward: if this file was in the last get_context result → +0.3
   const implicitRewarded = implicitRewardFromSync(filepath, stmts);
   if (implicitRewarded) lines.push(`   🎯 Implicit reward +0.3 (file was in recent context)`);
+
+  // Qdrant vector indexing — fire-and-forget (Qdrant is optional, silent on failure)
+  const cfg = loadConfig();
+  const qdrantCfg = getQdrantConfig(cfg);
+  if (qdrantCfg) {
+    void indexFileInQdrant(filepath, source, qdrantCfg, cfg.semanticCompression).catch(() => {});
+  }
 
   return lines.join("\n");
 }

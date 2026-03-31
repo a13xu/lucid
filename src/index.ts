@@ -64,6 +64,7 @@ import {
 } from "./tools/webdev/index.js";
 import { handleSmartContext, SmartContextSchema } from "./tools/smart-context.js";
 import { handleSuggestModel, SuggestModelSchema } from "./tools/model-advisor.js";
+import { handleCompressText, CompressTextSchema } from "./tools/compress.js";
 
 // ---------------------------------------------------------------------------
 // CLI mode: lucid watch | lucid status | lucid stop
@@ -411,6 +412,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ["task_description"],
+      },
+    },
+    {
+      name: "compress_text",
+      description:
+        "Compress text using LLMLingua-2 semantic compression (microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank). " +
+        "Identifies and drops semantically unimportant tokens while preserving meaning. " +
+        "Model downloads ~700MB on first use and is cached in ~/.lucid/models/. " +
+        "Returns compressed text with stats (original/compressed length, ratio, tokens saved).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          text: { type: "string", description: "Text to compress" },
+          ratio: {
+            type: "number",
+            description: "Target compression ratio: 0.3 = keep 30%, 0.5 = keep 50% (default: 0.5)",
+          },
+          min_length: {
+            type: "number",
+            description: "Skip compression for texts shorter than this in chars (default: 300)",
+          },
+        },
+        required: ["text"],
       },
     },
     // ── Reward System ────────────────────────────────────────────────────────
@@ -830,8 +854,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "get_recent":    text = handleGetRecent(stmts, GetRecentSchema.parse(args)); break;
 
       // Smart Context + Model Advisor
-      case "smart_context":  text = await handleSmartContext(stmts, SmartContextSchema.parse(args)); break;
-      case "suggest_model":  text = handleSuggestModel(SuggestModelSchema.parse(args)); break;
+      case "smart_context":   text = await handleSmartContext(stmts, SmartContextSchema.parse(args)); break;
+      case "suggest_model":   text = handleSuggestModel(SuggestModelSchema.parse(args)); break;
+      case "compress_text":   text = await handleCompressText(CompressTextSchema.parse(args)); break;
 
       // Reward System
       case "reward":        text = handleReward(stmts, RewardSchema.parse(args)); break;

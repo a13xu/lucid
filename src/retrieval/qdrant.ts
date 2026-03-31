@@ -4,6 +4,7 @@
 
 import type { ResolvedConfig } from "../config.js";
 import { safeFetch } from "../security/ssrf.js";
+import { tryCompressTextSemantic } from "../compression/semantic.js";
 
 type QdrantCfg = NonNullable<ResolvedConfig["qdrant"]>;
 
@@ -122,18 +123,31 @@ function stableId(s: string): number {
 export async function indexFileInQdrant(
   filepath: string,
   text: string,
-  cfg: QdrantCfg
+  cfg: QdrantCfg,
+  compressionCfg?: ResolvedConfig["semanticCompression"]
 ): Promise<void> {
   await ensureCollection(cfg);
 
   const chunks = chunkFile(filepath, text);
   if (chunks.length === 0) return;
 
+  const compressForEmbedding = compressionCfg?.enabled && compressionCfg.applyToEmbeddings !== false;
+
   // Batch embed (max 96 texts per request for most providers)
   const BATCH = 32;
   for (let b = 0; b < chunks.length; b += BATCH) {
     const batch = chunks.slice(b, b + BATCH);
-    const vectors = await embed(batch.map((c) => c.text), cfg);
+
+    let textsToEmbed: string[];
+    if (compressForEmbedding) {
+      textsToEmbed = await Promise.all(
+        batch.map((c) => tryCompressTextSemantic(c.text, compressionCfg!.ratio ?? 0.5, compressionCfg!.minLength ?? 300))
+      );
+    } else {
+      textsToEmbed = batch.map((c) => c.text);
+    }
+
+    const vectors = await embed(textsToEmbed, cfg);
 
     const points = batch.map((c, idx) => ({
       id: c.id,
