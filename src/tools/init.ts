@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { resolve, join, basename } from "path";
+import { homedir } from "os";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { fileURLToPath } from "url";
 import type { Statements } from "../database.js";
@@ -208,6 +209,17 @@ export async function handleInitProject(stmts: Statements, input: InitProjectInp
     lines.push(`📚 Skills: already installed (${skillsResult.skipped.length} skill(s))`);
   }
 
+  // ── Global skills (~/.claude/skills/) ────────────────────────────────────
+  const globalSkillsResult = installGlobalSkills();
+  if (globalSkillsResult.installed.length > 0) {
+    lines.push(`🌐 Global skills installed in ~/.claude/skills/:`);
+    for (const s of globalSkillsResult.installed) {
+      lines.push(`   • /${s} (available in all projects)`);
+    }
+  } else if (globalSkillsResult.skipped.length > 0) {
+    lines.push(`🌐 Global skills: already installed (${globalSkillsResult.skipped.length} skill(s))`);
+  }
+
   // ── CLAUDE.md injection ───────────────────────────────────────────────────
   const injected = injectClaudeMdInstruction(dir);
   if (injected) {
@@ -335,6 +347,10 @@ function installSkills(projectDir: string): SkillInstallResult {
   }
 
   return result;
+}
+
+function installGlobalSkills(): SkillInstallResult {
+  return installSkills(homedir());
 }
 
 function buildChannelSummary(cfg: import("../security/alerts.js").AdminConfig): string {
