@@ -62,6 +62,8 @@ import {
   DesignTokensSchema,      handleDesignTokens,
   PerfHintsSchema,         handlePerfHints,
 } from "./tools/webdev/index.js";
+import { handleSmartContext, SmartContextSchema } from "./tools/smart-context.js";
+import { handleSuggestModel, SuggestModelSchema } from "./tools/model-advisor.js";
 
 // ---------------------------------------------------------------------------
 // CLI mode: lucid watch | lucid status | lucid stop
@@ -366,6 +368,49 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           hours: { type: "number", description: "Look back N hours (default 24)" },
           withDiffs: { type: "boolean", description: "Include line diffs (default true)" },
         },
+      },
+    },
+    // ── Smart Context + Model Advisor ─────────────────────────────────────────
+    {
+      name: "smart_context",
+      description:
+        "Combined: knowledge graph (recall) + code files (get_context) in one call. " +
+        "Use instead of calling recall() + get_context() separately. " +
+        "task_type adjusts token budget: simple=2000, moderate=6000, complex=12000. " +
+        "Logs an experience so reward()/penalize() work after this call.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "What you are working on" },
+          task_type: {
+            type: "string",
+            enum: ["simple", "moderate", "complex"],
+            description: "Token budget: simple=2000, moderate=6000 (default), complex=12000",
+          },
+          dirs: {
+            type: "array",
+            items: { type: "string" },
+            description: "Whitelist directories (e.g. [\"src\", \"backend\"])",
+          },
+        },
+        required: ["query"],
+      },
+    },
+    {
+      name: "suggest_model",
+      description:
+        "Classify task complexity → recommend Claude model. " +
+        "Returns { model, model_id, reasoning, context_budget }. " +
+        "Call at the start of any workflow. Simple lookups → Haiku; everything else → Sonnet (default).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          task_description: {
+            type: "string",
+            description: "Natural language description of the task you are about to perform",
+          },
+        },
+        required: ["task_description"],
       },
     },
     // ── Reward System ────────────────────────────────────────────────────────
@@ -783,6 +828,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Context & Token Optimization
       case "get_context":   text = await handleGetContext(stmts, GetContextSchema.parse(args)); break;
       case "get_recent":    text = handleGetRecent(stmts, GetRecentSchema.parse(args)); break;
+
+      // Smart Context + Model Advisor
+      case "smart_context":  text = await handleSmartContext(stmts, SmartContextSchema.parse(args)); break;
+      case "suggest_model":  text = handleSuggestModel(SuggestModelSchema.parse(args)); break;
 
       // Reward System
       case "reward":        text = handleReward(stmts, RewardSchema.parse(args)); break;

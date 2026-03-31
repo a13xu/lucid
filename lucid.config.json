@@ -1,0 +1,5 @@
+{
+  "maxTokensPerFile": 600,
+  "maxContextTokens": 8000,
+  "recentWindowHours": 48
+}
