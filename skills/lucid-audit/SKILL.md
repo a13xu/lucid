@@ -35,6 +35,12 @@ digraph lucid_audit {
 }
 ```
 
+### 0. Get model recommendation
+```
+suggest_model(task_description="<paste the file path or description of what was written>")
+```
+Say: **"Using [model] — [reasoning]"** then proceed.
+
 ### 1. Validate logic correctness
 ```
 validate_file(path="<file you wrote or modified>")

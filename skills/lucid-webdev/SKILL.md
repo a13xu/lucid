@@ -14,6 +14,14 @@ call the relevant generator tool first. Do not write boilerplate manually.
 **INVOKE when:** building UI components, scaffolding pages, writing API clients, running accessibility/security/performance audits
 **DO NOT INVOKE for:** backend-only logic with no web layer
 
+## Steps
+
+### 0. Get model recommendation
+```
+suggest_model(task_description="<paste the user's task description>")
+```
+Say: **"Using [model] — [reasoning]"** then proceed.
+
 ## Available tools
 
 | Task | Tool |

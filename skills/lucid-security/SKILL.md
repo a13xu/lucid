@@ -16,6 +16,12 @@ Run this skill. No exceptions.
 
 ## Steps
 
+### 0. Get model recommendation
+```
+suggest_model(task_description="<paste the user's task description>")
+```
+Say: **"Using [model] — [reasoning]"** then proceed.
+
 ### 1. Security scan
 ```
 security_scan(code="<file contents or snippet>", language="typescript", context="backend")

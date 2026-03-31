@@ -17,6 +17,12 @@ Do NOT write implementation code until a plan exists and tasks are defined.
 
 ## Steps
 
+### 0. Get model recommendation
+```
+suggest_model(task_description="<paste the user's task description>")
+```
+Say: **"Using [model] — [reasoning]"** then proceed.
+
 ### 1. Create the plan
 ```
 plan_create(
