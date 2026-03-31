@@ -61,7 +61,7 @@ const LUCID_HOOK: HookEntry = {
   hooks: [
     {
       type: "command",
-      command: `echo '🔄 ${LUCID_MARKER}(path) to keep knowledge graph up to date'`,
+      command: `lucid-sync 2>/dev/null || echo '🔄 ${LUCID_MARKER}(path) — install lucid globally: npm i -g @a13xu/lucid'`,
     },
   ],
 };

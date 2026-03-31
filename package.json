@@ -4,7 +4,8 @@
   "description": "Token-efficient memory, code indexing, and validation for Claude Code agents — SQLite + FTS5, TF-IDF + Qdrant retrieval, AST skeleton pruning, diff-aware context, Logic Guardian drift detection",
   "type": "module",
   "bin": {
-    "lucid": "./build/index.js"
+    "lucid": "./build/index.js",
+    "lucid-sync": "./build/lucid-sync.js"
   },
   "files": [
     "build/**/*.js",
