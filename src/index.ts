@@ -64,6 +64,102 @@ import {
 } from "./tools/webdev/index.js";
 
 // ---------------------------------------------------------------------------
+// CLI mode: lucid watch | lucid status | lucid stop
+// ---------------------------------------------------------------------------
+
+const [,, _cliCmd, ..._cliArgs] = process.argv;
+
+if (_cliCmd === "watch" || _cliCmd === "status" || _cliCmd === "stop") {
+  await runCli(_cliCmd, _cliArgs);
+  process.exit(0);
+}
+
+async function runCli(cmd: string, args: string[]): Promise<void> {
+  const { join } = await import("path");
+  const { homedir } = await import("os");
+  const { existsSync, mkdirSync, writeFileSync, readFileSync } = await import("fs");
+
+  const PID_DIR = join(homedir(), ".lucid");
+  const PID_FILE = join(PID_DIR, "watch.pid");
+
+  if (cmd === "status") {
+    if (!existsSync(PID_FILE)) { console.log("Lucid daemon: not running"); return; }
+    const pid = readFileSync(PID_FILE, "utf-8").trim();
+    try { process.kill(Number(pid), 0); console.log(`Lucid daemon: running (PID ${pid})`); }
+    catch { console.log("Lucid daemon: not running (stale PID file)"); }
+    return;
+  }
+
+  if (cmd === "stop") {
+    if (!existsSync(PID_FILE)) { console.log("Lucid daemon: not running"); return; }
+    const pid = readFileSync(PID_FILE, "utf-8").trim();
+    try { process.kill(Number(pid), "SIGTERM"); console.log(`Lucid daemon stopped (PID ${pid})`); }
+    catch { console.log("Lucid daemon: not running (stale PID file)"); }
+    return;
+  }
+
+  // cmd === "watch"
+  const portIdx = args.indexOf("--port");
+  const port = portIdx >= 0 ? Number(args[portIdx + 1]) : 7821;
+  const noHttp = args.includes("--no-http");
+  const watchDir = args.find((a) => !a.startsWith("--")) ?? process.cwd();
+
+  const { initDatabase, prepareStatements } = await import("./database.js");
+  const db = initDatabase();
+  const stmts = prepareStatements(db);
+
+  if (!noHttp) {
+    const { startHttpServer } = await import("./http/server.js");
+    startHttpServer(stmts, { port });
+  }
+
+  mkdirSync(PID_DIR, { recursive: true });
+  writeFileSync(PID_FILE, String(process.pid), "utf-8");
+
+  const chokidar = await import("chokidar");
+  const watcher = chokidar.watch(watchDir, {
+    ignored: [/node_modules/, /\.git/, /[/\\]build[/\\]/, /[/\\]dist[/\\]/, /\.d\.ts$/],
+    persistent: true,
+    ignoreInitial: true,
+  });
+
+  const DEBOUNCE_MS = 300;
+  const timers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  const syncPath = (filePath: string): void => {
+    const existing = timers.get(filePath);
+    if (existing) clearTimeout(existing);
+    timers.set(filePath, setTimeout(() => {
+      timers.delete(filePath);
+      if (!noHttp) {
+        fetch(`http://localhost:${port}/sync`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: filePath }),
+        }).catch(() => {});
+      } else {
+        import("./tools/sync.js").then(({ handleSyncFile }) => {
+          handleSyncFile(stmts, { path: filePath });
+        }).catch(() => {});
+      }
+    }, DEBOUNCE_MS));
+  };
+
+  watcher.on("add", syncPath).on("change", syncPath);
+  process.stderr.write(`[Lucid] Watching ${watchDir}${noHttp ? " (no HTTP)" : ` on port ${port}`}\n`);
+
+  const shutdown = (): void => {
+    watcher.close().catch(() => {});
+    try { db.pragma("wal_checkpoint(FULL)"); } catch { /* ignore */ }
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+
+  await new Promise<never>(() => { /* keep alive */ });
+}
+
+// ---------------------------------------------------------------------------
 // Init DB
 // ---------------------------------------------------------------------------
 
