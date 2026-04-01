@@ -22,11 +22,11 @@ export const PlanListSchema = z.object({
 });
 
 export const PlanGetSchema = z.object({
-  plan_id: z.number().int().positive(),
+  plan_id: z.coerce.number().int().positive(),
 });
 
 export const PlanUpdateTaskSchema = z.object({
-  task_id: z.number().int().positive(),
+  task_id: z.coerce.number().int().positive(),
   status:  z.enum(["pending", "in_progress", "done", "blocked"]),
   note:    z.string().optional(),
 });

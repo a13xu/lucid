@@ -96,7 +96,7 @@ Default DB path: `~/.claude/memory.db`
 | `plan_create` | Create a development plan with title, description, and tasks. Returns plan ID. |
 | `plan_list` | List all plans with status summary (total/done/in-progress tasks). |
 | `plan_get` | Get full plan details including all tasks and their status. |
-| `plan_update_task` | Update a task's status (`todo` → `in_progress` → `done`) and optionally add notes. |
+| `plan_update_task` | Update a task's status (`pending` → `in_progress` → `done` \| `blocked`) and optionally add notes. Accepts `task_id` as number or string. |
 
 ### Reward system
 | Tool | Description |
