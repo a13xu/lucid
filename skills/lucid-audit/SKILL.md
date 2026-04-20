@@ -2,6 +2,17 @@
 name: lucid-audit
 description: MANDATORY before marking any task done — runs Logic Guardian + Code Quality checks. HARD-GATE blocks completion without validation.
 argument-hint: "[file path or 'all changed files']"
+allowed-tools:
+  - mcp__lucid__suggest_model
+  - mcp__lucid__validate_file
+  - mcp__lucid__check_drift
+  - mcp__lucid__get_checklist
+  - mcp__lucid__check_code_quality
+  - mcp__lucid__coding_rules
+  - mcp__lucid__get_recent
+  - mcp__lucid__sync_file
+  - Read
+  - Glob
 ---
 
 <HARD-GATE>

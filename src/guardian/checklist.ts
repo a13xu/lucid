@@ -1,4 +1,8 @@
-export const CHECKLIST = `# Logic Guardian — Validation Checklist (5 passes)
+import { join } from "path";
+import { homedir } from "os";
+import { existsSync, readFileSync } from "fs";
+
+export const ORIGINAL_CHECKLIST = `# Logic Guardian — Validation Checklist (5 passes)
 
 ## Pass 1: Logic Trace
 Trace through the code with CONCRETE values:
@@ -65,3 +69,19 @@ STOP if you find yourself thinking:
 - "The error handling is probably fine" → TRACE THE ERROR PATH.
 - "This is standard boilerplate" → Verify it fits this context.
 `;
+
+// Opt-in: if a pre-compressed copy exists at ~/.lucid/compressed-prompts/checklist.txt
+// (produced by `npm run compress-prompts`), serve that instead. Falls back to the
+// original on any error so this is always safe.
+function loadCompressed(): string | null {
+  try {
+    const p = join(homedir(), ".lucid", "compressed-prompts", "checklist.txt");
+    if (!existsSync(p)) return null;
+    const text = readFileSync(p, "utf-8").trim();
+    return text.length > 0 ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+export const CHECKLIST = loadCompressed() ?? ORIGINAL_CHECKLIST;

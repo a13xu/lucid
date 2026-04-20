@@ -2,6 +2,15 @@
 name: lucid-security
 description: Run before merging any code that handles user input, auth, or external data — security scan + drift check for injection, XSS, and credential exposure.
 argument-hint: "[file path or directory]"
+allowed-tools:
+  - mcp__lucid__suggest_model
+  - mcp__lucid__security_scan
+  - mcp__lucid__check_drift
+  - mcp__lucid__validate_file
+  - mcp__lucid__get_recent
+  - mcp__lucid__grep_code
+  - Read
+  - Glob
 ---
 
 <HARD-GATE>

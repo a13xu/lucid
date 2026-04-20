@@ -2,6 +2,15 @@
 name: lucid-plan
 description: MANDATORY before writing code for any non-trivial feature — creates a persisted plan with tasks. HARD-GATE: no coding without a plan.
 argument-hint: "[feature or task description]"
+allowed-tools:
+  - mcp__lucid__suggest_model
+  - mcp__lucid__plan_create
+  - mcp__lucid__plan_list
+  - mcp__lucid__plan_get
+  - mcp__lucid__plan_update_task
+  - mcp__lucid__smart_context
+  - mcp__lucid__recall
+  - mcp__lucid__remember
 ---
 
 <HARD-GATE>

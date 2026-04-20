@@ -15,7 +15,11 @@ import { join } from "path";
 import { homedir } from "os";
 import { mkdirSync } from "fs";
 
-const MODEL_ID = "microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank";
+// Microsoft's original repo ships only PyTorch weights, so transformers.js
+// (ONNX Runtime) cannot load it. ldenoue/* mirrors the same checkpoint with
+// pre-built `onnx/model.onnx` (710 MB) and `onnx/model_quantized.onnx` (179 MB),
+// matching the dtype lookups used below.
+const MODEL_ID = "ldenoue/llmlingua-2-bert-base-multilingual-cased-meetingbank";
 const MODELS_DIR = join(homedir(), ".lucid", "models");
 
 // ---------------------------------------------------------------------------

@@ -2,6 +2,15 @@
 name: lucid-start
 description: MANDATORY at every session start and before any coding task — loads project context via Lucid before Claude reads any file or writes any code
 argument-hint: "[optional: what you are about to work on]"
+allowed-tools:
+  - mcp__lucid__suggest_model
+  - mcp__lucid__init_project
+  - mcp__lucid__sync_file
+  - mcp__lucid__sync_project
+  - mcp__lucid__memory_stats
+  - mcp__lucid__recall
+  - mcp__lucid__get_recent
+  - mcp__lucid__smart_context
 ---
 
 <HARD-GATE>

@@ -2,6 +2,20 @@
 name: lucid-webdev
 description: Use for web development tasks — generates components, pages, audits, API clients, and performance hints via Lucid's 10 web dev tools.
 argument-hint: "[what you are building: component/page/api/audit]"
+allowed-tools:
+  - mcp__lucid__suggest_model
+  - mcp__lucid__generate_component
+  - mcp__lucid__scaffold_page
+  - mcp__lucid__seo_meta
+  - mcp__lucid__accessibility_audit
+  - mcp__lucid__api_client
+  - mcp__lucid__test_generator
+  - mcp__lucid__responsive_layout
+  - mcp__lucid__security_scan
+  - mcp__lucid__design_tokens
+  - mcp__lucid__perf_hints
+  - Write
+  - Edit
 ---
 
 <HARD-GATE>

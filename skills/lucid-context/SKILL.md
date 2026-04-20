@@ -2,6 +2,15 @@
 name: lucid-context
 description: Use BEFORE starting any coding task — retrieves relevant context via smart_context (code + knowledge graph). HARD-GATE: do not read files manually before calling smart_context.
 argument-hint: "[what you are working on]"
+allowed-tools:
+  - mcp__lucid__suggest_model
+  - mcp__lucid__smart_context
+  - mcp__lucid__get_context
+  - mcp__lucid__get_recent
+  - mcp__lucid__recall
+  - mcp__lucid__grep_code
+  - mcp__lucid__reward
+  - mcp__lucid__penalize
 ---
 
 <HARD-GATE>

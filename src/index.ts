@@ -1,10 +1,6 @@
 #!/usr/bin/env node
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import { initDatabase, prepareStatements } from "./database.js";
@@ -176,735 +172,617 @@ const stmts = prepareStatements(db);
 const _appCfg = loadConfig();
 configureGuard(_appCfg.security ?? {});
 
-// Register Qdrant host in SSRF allowlist if configured
 const _qdrantUrl = process.env["QDRANT_URL"] ?? _appCfg.qdrant?.url;
-if (_qdrantUrl) {
-  try { allowHost(_qdrantUrl); } catch { /* ignore invalid URL */ }
-}
+if (_qdrantUrl) { try { allowHost(_qdrantUrl); } catch { /* ignore */ } }
 const _embeddingUrl = process.env["EMBEDDING_URL"] ?? _appCfg.qdrant?.embeddingUrl;
-if (_embeddingUrl) {
-  try { allowHost(_embeddingUrl); } catch { /* ignore */ }
-} else {
-  // Default embedding endpoint
-  allowHost("https://api.openai.com");
-}
+if (_embeddingUrl) { try { allowHost(_embeddingUrl); } catch { /* ignore */ } }
+else { allowHost("https://api.openai.com"); }
 
 // ---------------------------------------------------------------------------
-// MCP Server
+// MCP Server (high-level McpServer API, SDK 1.27+)
 // ---------------------------------------------------------------------------
 
-const server = new Server(
-  { name: "lucid", version: "1.13.0" },
-  { capabilities: { tools: {} } }
+const SERVER_VERSION = getCurrentVersion();
+
+const server = new McpServer(
+  { name: "lucid", version: SERVER_VERSION },
+  { capabilities: { tools: {}, resources: {}, prompts: {} } }
 );
 
 // ---------------------------------------------------------------------------
-// Tool definitions
+// Shared tool result wrapper: rate-limit + WAF + output secret scan + errors.
+// Handler may return a string OR { text, structured }.
 // ---------------------------------------------------------------------------
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    // ── Memory ──────────────────────────────────────────────────────────────
-    {
-      name: "remember",
-      description: "Store a fact, decision, or observation about an entity in the knowledge graph.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          entity: { type: "string", description: "Entity name (project, person, concept, tool)" },
-          entityType: {
-            type: "string",
-            enum: ["person", "project", "decision", "pattern", "tool", "config", "bug", "convention"],
-          },
-          observation: { type: "string", description: "The fact to remember" },
-        },
-        required: ["entity", "entityType", "observation"],
+type ToolReturn = string | { text: string; structured: Record<string, unknown> };
+
+function tx<I>(name: string, handler: (args: I) => ToolReturn | Promise<ToolReturn>) {
+  return async (args: I) => {
+    const guard = guardRequest(name, args as Record<string, unknown>);
+    if (guard.blocked) {
+      return {
+        content: [{ type: "text" as const, text: guard.reason ?? "Request blocked by security guard" }],
+        isError: true,
+      };
+    }
+    try {
+      const out = await handler(args);
+      if (typeof out === "string") {
+        return { content: [{ type: "text" as const, text: guardOutput(name, out) }] };
+      }
+      return {
+        content: [{ type: "text" as const, text: guardOutput(name, out.text) }],
+        structuredContent: out.structured,
+      };
+    } catch (err) {
+      const msg = err instanceof z.ZodError
+        ? `Validation error: ${err.errors.map((e) => e.message).join(", ")}`
+        : err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text" as const, text: `Error: ${msg}` }], isError: true };
+    }
+  };
+}
+
+// Helpers that produce both text + structured output for tools whose handlers
+// already return JSON. Avoids touching downstream handler files.
+
+const memoryStatsRich = (): ToolReturn => {
+  const text = memoryStats(db, stmts);
+  return { text, structured: JSON.parse(text) as Record<string, unknown> };
+};
+
+const recallAllRich = (): ToolReturn => {
+  const text = recallAll(db, stmts);
+  return { text, structured: JSON.parse(text) as Record<string, unknown> };
+};
+
+const recallRich = (args: z.infer<typeof RecallSchema>): ToolReturn => {
+  const text = recall(stmts, args);
+  // recall returns either "No results..." text or JSON array.
+  const trimmed = text.trim();
+  if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+    try { return { text, structured: { entities: JSON.parse(text) } }; }
+    catch { return text; }
+  }
+  return text;
+};
+
+// Output schemas (Zod raw shapes) for structured-content tools
+const memoryStatsOutputShape = {
+  entity_count: z.number().int(),
+  relation_count: z.number().int(),
+  observation_count: z.number().int(),
+  db_size_bytes: z.number().int(),
+  db_size_kb: z.number().int(),
+  wal_mode: z.boolean(),
+  fts5_enabled: z.boolean(),
+} as const;
+
+const entityShape = {
+  id: z.number().int(),
+  name: z.string(),
+  type: z.string(),
+  observations: z.array(z.string()),
+  created_at: z.number(),
+  updated_at: z.number(),
+  relations: z.array(z.object({
+    from: z.string(), to: z.string(), type: z.string(),
+  })),
+} as const;
+
+const recallAllOutputShape = {
+  stats: z.object(memoryStatsOutputShape),
+  entities: z.array(z.object(entityShape)),
+} as const;
+
+const recallOutputShape = {
+  entities: z.array(z.object(entityShape)),
+} as const;
+
+// ---------------------------------------------------------------------------
+// Tools — Memory
+// ---------------------------------------------------------------------------
+
+server.registerTool("remember", {
+  title: "Remember",
+  description: "Store a fact, decision, or observation about an entity in the knowledge graph.",
+  inputSchema: RememberSchema.shape,
+}, tx("remember", (args) => remember(stmts, args)));
+
+server.registerTool("relate", {
+  title: "Relate",
+  description: "Create a directed relationship between two entities in the knowledge graph.",
+  inputSchema: RelateSchema.shape,
+}, tx("relate", (args) => relate(stmts, args)));
+
+server.registerTool("recall", {
+  title: "Recall",
+  description: "Search memory using full-text search. Fast, indexed, supports partial matches and stemming.",
+  inputSchema: RecallSchema.shape,
+  outputSchema: recallOutputShape,
+}, tx("recall", (args) => recallRich(args)));
+
+server.registerTool("recall_all", {
+  title: "Recall All",
+  description: "Get the entire knowledge graph with statistics.",
+  outputSchema: recallAllOutputShape,
+}, tx("recall_all", () => recallAllRich()));
+
+server.registerTool("forget", {
+  title: "Forget",
+  description: "Remove an entity and all its relations from memory.",
+  inputSchema: ForgetSchema.shape,
+}, tx("forget", (args) => forget(stmts, args)));
+
+server.registerTool("memory_stats", {
+  title: "Memory Stats",
+  description: "Get memory usage statistics.",
+  outputSchema: memoryStatsOutputShape,
+}, tx("memory_stats", () => memoryStatsRich()));
+
+// ---------------------------------------------------------------------------
+// Tools — Init / Indexing
+// ---------------------------------------------------------------------------
+
+server.registerTool("init_project", {
+  title: "Init Project",
+  description:
+    "Scan and index a project directory into the knowledge graph. " +
+    "Reads CLAUDE.md, package.json/pyproject.toml, README.md, .mcp.json, logic-guardian.yaml, " +
+    "and source files (exported functions/classes). Call once when starting work on a project.",
+  inputSchema: InitProjectSchema.shape,
+}, tx("init_project", async (args) => handleInitProject(stmts, args)));
+
+server.registerTool("sync_file", {
+  title: "Sync File",
+  description:
+    "Index or re-index a single source file after it was written or modified. " +
+    "IMPORTANT: call this automatically after every Write or Edit tool call.",
+  inputSchema: SyncFileSchema.shape,
+}, tx("sync_file", (args) => handleSyncFile(stmts, args)));
+
+server.registerTool("sync_project", {
+  title: "Sync Project",
+  description: "Re-index the entire project directory incrementally (after refactor or git pull).",
+  inputSchema: SyncProjectSchema.shape,
+}, tx("sync_project", (args) => handleSyncProject(stmts, args)));
+
+server.registerTool("grep_code", {
+  title: "Grep Code",
+  description:
+    "Search indexed source files using a regex pattern. Decompresses stored content and returns " +
+    "only matching lines with context. Token-efficient (~20-50 tokens vs full file).",
+  inputSchema: GrepCodeSchema.shape,
+}, tx("grep_code", (args) => handleGrepCode(stmts, args)));
+
+// ---------------------------------------------------------------------------
+// Tools — Context & Token Optimization
+// ---------------------------------------------------------------------------
+
+server.registerTool("get_context", {
+  title: "Get Context",
+  description:
+    "Retrieve the minimal relevant context for a task or query. TF-IDF (or Qdrant) ranking " +
+    "+ recency boost + skeleton pruning to stay within token budget.",
+  inputSchema: GetContextSchema.shape,
+}, tx("get_context", async (args) => handleGetContext(stmts, args)));
+
+server.registerTool("get_recent", {
+  title: "Get Recent",
+  description:
+    "Return files modified recently with line-level diffs. Useful after a git pull or session resume.",
+  inputSchema: GetRecentSchema.shape,
+}, tx("get_recent", (args) => handleGetRecent(stmts, args)));
+
+server.registerTool("smart_context", {
+  title: "Smart Context",
+  description:
+    "Combined: knowledge graph (recall) + code files (get_context) in one call. " +
+    "task_type adjusts token budget: simple=2000, moderate=6000, complex=12000.",
+  inputSchema: SmartContextSchema.shape,
+}, tx("smart_context", async (args) => handleSmartContext(stmts, args)));
+
+server.registerTool("suggest_model", {
+  title: "Suggest Model",
+  description:
+    "Classify task complexity → recommend Claude model. Returns { model, model_id, reasoning, context_budget }. " +
+    "Call at the start of any workflow.",
+  inputSchema: SuggestModelSchema.shape,
+}, tx("suggest_model", (args) => handleSuggestModel(args)));
+
+server.registerTool("compress_text", {
+  title: "Compress Text",
+  description:
+    "Compress text using LLMLingua-2 semantic compression. Model downloads ~700MB on first use " +
+    "(cached in ~/.lucid/models/). Returns compressed text with stats.",
+  inputSchema: CompressTextSchema.shape,
+}, tx("compress_text", async (args) => handleCompressText(args)));
+
+// ---------------------------------------------------------------------------
+// Tools — Reward System
+// ---------------------------------------------------------------------------
+
+server.registerTool("reward", {
+  title: "Reward",
+  description:
+    "Signal that the last get_context() result was helpful (+1 reward). " +
+    "Files in that context will be ranked higher in future similar queries.",
+  inputSchema: RewardSchema.shape,
+}, tx("reward", (args) => handleReward(stmts, args)));
+
+server.registerTool("penalize", {
+  title: "Penalize",
+  description:
+    "Signal that the last get_context() result was unhelpful (-1 reward). " +
+    "Files in that context will be ranked lower in future similar queries.",
+  inputSchema: PenalizeSchema.shape,
+}, tx("penalize", (args) => handlePenalize(stmts, args)));
+
+server.registerTool("show_rewards", {
+  title: "Show Rewards",
+  description:
+    "Show the top rewarded experiences and most rewarded files. " +
+    "Rewards decay exponentially (half-life ~14 days).",
+  inputSchema: ShowRewardsSchema.shape,
+}, tx("show_rewards", (args) => handleShowRewards(stmts, args)));
+
+// ---------------------------------------------------------------------------
+// Tools — Logic Guardian
+// ---------------------------------------------------------------------------
+
+server.registerTool("validate_file", {
+  title: "Validate File",
+  description:
+    "Run Logic Guardian validation on a source file. Detects LLM drift: logic inversions, " +
+    "null propagation, type confusion, copy-paste drift, silent exceptions. Python/JS/TS.",
+  inputSchema: ValidateFileSchema.shape,
+}, tx("validate_file", (args) => handleValidateFile(args)));
+
+server.registerTool("check_drift", {
+  title: "Check Drift",
+  description: "Analyze a code snippet for LLM drift patterns without saving to disk.",
+  inputSchema: CheckDriftSchema.shape,
+}, tx("check_drift", (args) => handleCheckDrift(args)));
+
+server.registerTool("get_checklist", {
+  title: "Get Checklist",
+  description: "Get the full Logic Guardian validation checklist (5 passes).",
+}, tx("get_checklist", () => handleGetChecklist()));
+
+// ---------------------------------------------------------------------------
+// Tools — Coding Guard
+// ---------------------------------------------------------------------------
+
+server.registerTool("coding_rules", {
+  title: "Coding Rules",
+  description:
+    "Get the 25 Golden Rules coding checklist. Covers clarity, naming, single responsibility, " +
+    "frontend rules, library selection, architecture separation.",
+}, tx("coding_rules", () => handleGetCodingRules()));
+
+// CheckCodeQualitySchema uses .refine(); pass the raw shape to MCP and re-parse
+// inside the handler so the refinement runs.
+const checkCodeQualityShape = {
+  path: z.string().optional().describe("Absolute or relative path to the file to analyze."),
+  code: z.string().optional().describe("Code snippet to analyze inline."),
+  language: z.enum(["python", "javascript", "typescript", "vue", "generic"]).optional()
+    .describe("Language hint. Auto-detected from file extension if path is provided."),
+} as const;
+
+server.registerTool("check_code_quality", {
+  title: "Check Code Quality",
+  description:
+    "Analyze a file or snippet against the 25 Golden Rules. Detects size violations, vague naming, " +
+    "deep nesting, dead code, inline styles, prop explosion, fetch-in-component.",
+  inputSchema: checkCodeQualityShape,
+}, tx("check_code_quality", (args) => handleCheckCodeQuality(CheckCodeQualitySchema.parse(args))));
+
+// ---------------------------------------------------------------------------
+// Tools — Planning
+// ---------------------------------------------------------------------------
+
+server.registerTool("plan_create", {
+  title: "Plan Create",
+  description:
+    "Create a plan with user story, ordered tasks, and test criteria. " +
+    "Call BEFORE writing any code to establish intent and acceptance criteria.",
+  inputSchema: PlanCreateSchema.shape,
+}, tx("plan_create", (args) => handlePlanCreate(db, stmts, args)));
+
+server.registerTool("plan_list", {
+  title: "Plan List",
+  description: "List plans with progress summary. Defaults to active plans.",
+  inputSchema: PlanListSchema.shape,
+}, tx("plan_list", (args) => handlePlanList(stmts, args)));
+
+server.registerTool("plan_get", {
+  title: "Plan Get",
+  description: "Get full plan details: tasks, test criteria, status, and notes.",
+  inputSchema: PlanGetSchema.shape,
+}, tx("plan_get", (args) => handlePlanGet(stmts, args)));
+
+server.registerTool("plan_update_task", {
+  title: "Plan Update Task",
+  description:
+    "Update a task status. Auto-completes the plan when all tasks are done. " +
+    "Statuses: pending → in_progress → done (or blocked).",
+  inputSchema: PlanUpdateTaskSchema.shape,
+}, tx("plan_update_task", (args) => handlePlanUpdateTask(stmts, args)));
+
+// ---------------------------------------------------------------------------
+// Tools — Updater
+// ---------------------------------------------------------------------------
+
+server.registerTool("update_lucid", {
+  title: "Update Lucid",
+  description:
+    "Check for a newer version of Lucid on npm and update automatically. " +
+    "Restart Claude Code after updating.",
+  inputSchema: UpdateLucidSchema.shape,
+}, tx("update_lucid", async (args) => handleUpdateLucid(args)));
+
+// ---------------------------------------------------------------------------
+// Tools — Web Dev Skills
+// ---------------------------------------------------------------------------
+
+server.registerTool("generate_component", {
+  title: "Generate Component",
+  description:
+    "Generate a complete component scaffold from a description. React (TSX/JSX) or Vue/Nuxt. " +
+    "Styling: Tailwind, CSS Modules, or none.",
+  inputSchema: GenerateComponentSchema.shape,
+}, tx("generate_component", (args) => handleGenerateComponent(args)));
+
+server.registerTool("scaffold_page", {
+  title: "Scaffold Page",
+  description:
+    "Generate a full page scaffold with layout, SEO head meta, and placeholder sections. " +
+    "Nuxt (useHead), Next.js (Metadata API), or plain Vue.",
+  inputSchema: ScaffoldPageSchema.shape,
+}, tx("scaffold_page", (args) => handleScaffoldPage(args)));
+
+server.registerTool("seo_meta", {
+  title: "SEO Meta",
+  description:
+    "Generate complete SEO metadata: HTML meta tags, Open Graph, Twitter Card, JSON-LD " +
+    "(Article, Product, WebSite, WebPage).",
+  inputSchema: SeoMetaSchema.shape,
+}, tx("seo_meta", (args) => handleSeoMeta(args)));
+
+server.registerTool("accessibility_audit", {
+  title: "Accessibility Audit",
+  description:
+    "Audit HTML/JSX/Vue snippets for WCAG violations. Checks: alt text, labels, empty buttons, " +
+    "tabindex, click handlers, target=_blank. Returns severity + WCAG criterion + corrected code.",
+  inputSchema: AccessibilityAuditSchema.shape,
+}, tx("accessibility_audit", (args) => handleAccessibilityAudit(args)));
+
+server.registerTool("api_client", {
+  title: "API Client",
+  description:
+    "Generate a typed TypeScript async function for a REST endpoint. Includes types, " +
+    "error handling (throws on non-2xx), usage example. Auth: bearer/cookie/apikey/none.",
+  inputSchema: ApiClientSchema.shape,
+}, tx("api_client", (args) => handleApiClient(args)));
+
+server.registerTool("test_generator", {
+  title: "Test Generator",
+  description:
+    "Generate a complete test file. Covers happy path, edge cases, error path, mock setup. " +
+    "Frameworks: Vitest, Jest, Playwright. Component: Vue Test Utils or React Testing Library.",
+  inputSchema: TestGeneratorSchema.shape,
+}, tx("test_generator", (args) => handleTestGenerator(args)));
+
+server.registerTool("responsive_layout", {
+  title: "Responsive Layout",
+  description:
+    "Generate a responsive mobile-first layout from a wireframe description. " +
+    "Tailwind utility classes, CSS Grid (named areas), or Flexbox + media queries.",
+  inputSchema: ResponsiveLayoutSchema.shape,
+}, tx("responsive_layout", (args) => handleResponsiveLayout(args)));
+
+server.registerTool("security_scan", {
+  title: "Security Scan",
+  description:
+    "Scan JS/TS/HTML/Vue for web security vulns: XSS, code injection, SQL injection, " +
+    "hardcoded secrets, open redirects, prototype pollution, path traversal, insecure CORS. " +
+    "Context-aware (frontend/backend/api).",
+  inputSchema: SecurityScanSchema.shape,
+}, tx("security_scan", (args) => handleSecurityScan(args)));
+
+server.registerTool("design_tokens", {
+  title: "Design Tokens",
+  description:
+    "Generate a complete design system token set from a brand color and mood. " +
+    "11-step color scales, neutrals, semantic aliases, type/spacing/radius/shadow tokens. " +
+    "Output: CSS vars, Tailwind config, or JSON.",
+  inputSchema: DesignTokensSchema.shape,
+}, tx("design_tokens", (args) => handleDesignTokens(args)));
+
+server.registerTool("perf_hints", {
+  title: "Perf Hints",
+  description:
+    "Analyze a component or page for Core Web Vitals issues. Detects LCP image priority, " +
+    "CLS dimensions, render-blocking scripts, fetch-in-render, INP, missing memoization, " +
+    "whole-library imports. Issues ranked by CWV metric impact.",
+  inputSchema: PerfHintsSchema.shape,
+}, tx("perf_hints", (args) => handlePerfHints(args)));
+
+// ---------------------------------------------------------------------------
+// Resources — read-only knowledge graph + config snapshots
+// ---------------------------------------------------------------------------
+
+server.registerResource("memory-stats", "lucid://memory/stats", {
+  title: "Memory Stats",
+  description: "Current memory usage: entity/relation/observation counts and DB size.",
+  mimeType: "application/json",
+}, async (uri) => ({
+  contents: [{ uri: uri.href, mimeType: "application/json", text: memoryStats(db, stmts) }],
+}));
+
+server.registerResource("memory-graph", "lucid://memory/graph", {
+  title: "Memory Graph",
+  description: "Full knowledge graph snapshot: all entities, relations, and observations.",
+  mimeType: "application/json",
+}, async (uri) => ({
+  contents: [{ uri: uri.href, mimeType: "application/json", text: recallAll(db, stmts) }],
+}));
+
+server.registerResource(
+  "memory-recent",
+  new ResourceTemplate("lucid://memory/recent/{hours}", { list: undefined }),
+  {
+    title: "Recent Activity",
+    description: "Files modified in the last {hours} hours, with line-level diffs.",
+    mimeType: "text/markdown",
+  },
+  async (uri, vars) => {
+    const hours = Number(vars["hours"]);
+    const safeHours = Number.isFinite(hours) && hours > 0 ? Math.min(hours, 720) : 24;
+    const text = handleGetRecent(stmts, { hours: safeHours, withDiffs: true });
+    return { contents: [{ uri: uri.href, mimeType: "text/markdown", text }] };
+  }
+);
+
+server.registerResource("plan-list", "lucid://plan/list", {
+  title: "Active Plans",
+  description: "All active development plans with progress summary.",
+  mimeType: "text/markdown",
+}, async (uri) => ({
+  contents: [{
+    uri: uri.href,
+    mimeType: "text/markdown",
+    text: handlePlanList(stmts, { status: "active" }),
+  }],
+}));
+
+server.registerResource("checklist", "lucid://guardian/checklist", {
+  title: "Logic Guardian Checklist",
+  description: "Full 5-pass validation checklist Claude must run before completing any task.",
+  mimeType: "text/markdown",
+}, async (uri) => ({
+  contents: [{ uri: uri.href, mimeType: "text/markdown", text: handleGetChecklist() }],
+}));
+
+server.registerResource("coding-rules", "lucid://guardian/coding-rules", {
+  title: "25 Golden Rules",
+  description: "Coding-quality checklist: clarity, naming, single responsibility, frontend rules.",
+  mimeType: "text/markdown",
+}, async (uri) => ({
+  contents: [{ uri: uri.href, mimeType: "text/markdown", text: handleGetCodingRules() }],
+}));
+
+server.registerResource("config", "lucid://config", {
+  title: "Lucid Configuration",
+  description: "Effective configuration (lucid.config.json + env overrides).",
+  mimeType: "application/json",
+}, async (uri) => ({
+  contents: [{
+    uri: uri.href,
+    mimeType: "application/json",
+    text: JSON.stringify({
+      version: SERVER_VERSION,
+      config: _appCfg,
+      env: {
+        MEMORY_DB_PATH: process.env["MEMORY_DB_PATH"] ?? null,
+        QDRANT_URL: _qdrantUrl ?? null,
+        EMBEDDING_URL: _embeddingUrl ?? null,
       },
-    },
-    {
-      name: "relate",
-      description: "Create a directed relationship between two entities in the knowledge graph.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          from: { type: "string", description: "Source entity name" },
-          to: { type: "string", description: "Target entity name" },
-          relationType: {
-            type: "string",
-            enum: ["uses", "depends_on", "created_by", "part_of", "replaced_by", "conflicts_with", "tested_by"],
-          },
-        },
-        required: ["from", "to", "relationType"],
-      },
-    },
-    {
-      name: "recall",
-      description: "Search memory using full-text search. Fast, indexed, supports partial matches and stemming.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "Search terms" },
-        },
-        required: ["query"],
-      },
-    },
-    {
-      name: "recall_all",
-      description: "Get the entire knowledge graph with statistics.",
-      inputSchema: { type: "object", properties: {} },
-    },
-    {
-      name: "forget",
-      description: "Remove an entity and all its relations from memory.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          entity: { type: "string", description: "Entity name to remove" },
-        },
-        required: ["entity"],
-      },
-    },
-    {
-      name: "memory_stats",
-      description: "Get memory usage statistics.",
-      inputSchema: { type: "object", properties: {} },
-    },
-    // ── Init / Indexing ──────────────────────────────────────────────────────
-    {
-      name: "init_project",
-      description:
-        "Scan and index a project directory into the knowledge graph. " +
-        "Reads CLAUDE.md (directives, conventions), package.json / pyproject.toml (dependencies, scripts), " +
-        "README.md (description), .mcp.json (MCP servers), logic-guardian.yaml (drift patterns), " +
-        "and source files (exported functions/classes). " +
-        "Call this once when starting work on a project to bootstrap memory with project context.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          directory: {
-            type: "string",
-            description: "Absolute path to the project root. Defaults to current working directory.",
-          },
-        },
-      },
-    },
-    {
-      name: "sync_file",
-      description:
-        "Index or re-index a single source file after it was written or modified. " +
-        "Extracts exports, description, and open TODOs, then updates the knowledge graph. " +
-        "IMPORTANT: call this automatically after every Write or Edit tool call.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Absolute or relative path to the modified file." },
-        },
-        required: ["path"],
-      },
-    },
-    {
-      name: "sync_project",
-      description:
-        "Re-index the entire project directory incrementally. " +
-        "Use this when multiple files have changed (e.g. after a refactor or git pull).",
-      inputSchema: {
-        type: "object",
-        properties: {
-          directory: {
-            type: "string",
-            description: "Project root directory. Defaults to current working directory.",
-          },
-        },
-      },
-    },
-    {
-      name: "grep_code",
-      description:
-        "Search indexed source files using a regex pattern. " +
-        "Decompresses stored binary content and returns only matching lines with context. " +
-        "Token-efficient: returns ~20-50 tokens instead of full file contents. " +
-        "Useful for finding function calls, variable usages, import patterns.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          pattern:  { type: "string", description: "Regex pattern to search for." },
-          language: { type: "string", enum: ["python", "javascript", "typescript", "vue", "generic"], description: "Filter by language." },
-          context:  { type: "number", description: "Lines of context before/after each match (0-10, default 2)." },
-        },
-        required: ["pattern"],
-      },
-    },
-    // ── Context & Token Optimization ─────────────────────────────────────────
-    {
-      name: "get_context",
-      description:
-        "Retrieve the minimal relevant context for a task or query. " +
-        "Uses TF-IDF scoring (or Qdrant vector search if configured) to rank files by relevance, " +
-        "applies recency boost for recently modified files, and returns skeletons (signatures only) " +
-        "for large files to stay within the token budget. " +
-        "Configure limits in lucid.config.json. Set QDRANT_URL env var for vector search.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "What you are working on or searching for" },
-          maxTokens: { type: "number", description: "Total token budget (default 4000)" },
-          dirs: { type: "array", items: { type: "string" }, description: "Whitelist directories (e.g. [\"src\", \"backend\"])" },
-          recentOnly: { type: "boolean", description: "Only files modified within recentWindowHours" },
-          recentHours: { type: "number", description: "Override recent window (hours)" },
-          skeletonOnly: { type: "boolean", description: "Always show skeleton (signatures only)" },
-          topK: { type: "number", description: "Max files to consider (default 10)" },
-        },
-        required: ["query"],
-      },
-    },
-    {
-      name: "get_recent",
-      description:
-        "Return files modified recently with line-level diffs. " +
-        "Shows what changed in each file since the previous sync. " +
-        "Useful for catching up after a git pull or resuming a session.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          hours: { type: "number", description: "Look back N hours (default 24)" },
-          withDiffs: { type: "boolean", description: "Include line diffs (default true)" },
-        },
-      },
-    },
-    // ── Smart Context + Model Advisor ─────────────────────────────────────────
-    {
-      name: "smart_context",
-      description:
-        "Combined: knowledge graph (recall) + code files (get_context) in one call. " +
-        "Use instead of calling recall() + get_context() separately. " +
-        "task_type adjusts token budget: simple=2000, moderate=6000, complex=12000. " +
-        "Logs an experience so reward()/penalize() work after this call.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "What you are working on" },
-          task_type: {
-            type: "string",
-            enum: ["simple", "moderate", "complex"],
-            description: "Token budget: simple=2000, moderate=6000 (default), complex=12000",
-          },
-          dirs: {
-            type: "array",
-            items: { type: "string" },
-            description: "Whitelist directories (e.g. [\"src\", \"backend\"])",
-          },
-        },
-        required: ["query"],
-      },
-    },
-    {
-      name: "suggest_model",
-      description:
-        "Classify task complexity → recommend Claude model. " +
-        "Returns { model, model_id, reasoning, context_budget }. " +
-        "Call at the start of any workflow. Simple lookups → Haiku; everything else → Sonnet (default).",
-      inputSchema: {
-        type: "object",
-        properties: {
-          task_description: {
-            type: "string",
-            description: "Natural language description of the task you are about to perform",
-          },
-        },
-        required: ["task_description"],
-      },
-    },
-    {
-      name: "compress_text",
-      description:
-        "Compress text using LLMLingua-2 semantic compression (microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank). " +
-        "Identifies and drops semantically unimportant tokens while preserving meaning. " +
-        "Model downloads ~700MB on first use and is cached in ~/.lucid/models/. " +
-        "Returns compressed text with stats (original/compressed length, ratio, tokens saved).",
-      inputSchema: {
-        type: "object",
-        properties: {
-          text: { type: "string", description: "Text to compress" },
-          ratio: {
-            type: "number",
-            description: "Target compression ratio: 0.3 = keep 30%, 0.5 = keep 50% (default: 0.5)",
-          },
-          min_length: {
-            type: "number",
-            description: "Skip compression for texts shorter than this in chars (default: 300)",
-          },
-        },
-        required: ["text"],
-      },
-    },
-    // ── Reward System ────────────────────────────────────────────────────────
-    {
-      name: "reward",
-      description:
-        "Signal that the last get_context() result was helpful (+1 reward). " +
-        "The files returned in that context will be ranked higher in future similar queries. " +
-        "Call this after a get_context() result led to a correct fix or useful code.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          note: { type: "string", description: "Optional note about what worked (stored for future reference)" },
-        },
-      },
-    },
-    {
-      name: "penalize",
-      description:
-        "Signal that the last get_context() result was unhelpful (-1 reward). " +
-        "The files returned in that context will be ranked lower in future similar queries. " +
-        "Call this after a get_context() result missed important files or was irrelevant.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          note: { type: "string", description: "Optional note about what was missing or wrong" },
-        },
-      },
-    },
-    {
-      name: "show_rewards",
-      description:
-        "Show the top rewarded experiences and most rewarded files. " +
-        "Rewards decay exponentially (half-life ~14 days). " +
-        "Use this to understand which context queries and files have been most valuable.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "Filter experiences by query text (optional)" },
-          topK: { type: "number", description: "Number of top results to show (default 10)" },
-        },
-      },
-    },
-    // ── Logic Guardian ───────────────────────────────────────────────────────
-    {
-      name: "validate_file",
-      description:
-        "Run Logic Guardian validation on a source file. Detects LLM drift patterns: " +
-        "logic inversions, null propagation, type confusion, copy-paste drift, silent exceptions, and more. " +
-        "Supports Python, JavaScript, TypeScript. Use after writing or modifying any code.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Absolute or relative path to the file to validate." },
-        },
-        required: ["path"],
-      },
-    },
-    {
-      name: "check_drift",
-      description:
-        "Analyze a code snippet for LLM drift patterns without saving to disk. " +
-        "Use this to validate code before writing it to a file.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          code: { type: "string", description: "The code snippet to analyze." },
-          language: {
-            type: "string",
-            enum: ["python", "javascript", "typescript", "generic"],
-            description: "Programming language. Defaults to 'generic'.",
-          },
-        },
-        required: ["code"],
-      },
-    },
-    {
-      name: "get_checklist",
-      description:
-        "Get the full Logic Guardian validation checklist (5 passes). " +
-        "Call this before marking any implementation task as done.",
-      inputSchema: { type: "object", properties: {} },
-    },
-    // ── Coding Guard ─────────────────────────────────────────────────────────
-    {
-      name: "coding_rules",
-      description:
-        "Get the 25 Golden Rules coding checklist. Covers clarity, naming, single responsibility, " +
-        "error handling, frontend component size/reuse/props, singleton rules, library selection, " +
-        "and architecture separation. Review before marking any task done.",
-      inputSchema: { type: "object", properties: {} },
-    },
-    {
-      name: "check_code_quality",
-      description:
-        "Analyze a file or code snippet against the 25 Golden Rules. " +
-        "Detects: file/function size violations, vague naming, deep nesting, dead code, and — " +
-        "for React/Vue component files — inline styles, prop explosion, fetch-in-component, " +
-        "direct DOM access, mixed styling systems. " +
-        "Complements validate_file (which checks logic correctness).",
-      inputSchema: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Absolute or relative path to the file to analyze." },
-          code: { type: "string", description: "Code snippet to analyze inline." },
-          language: {
-            type: "string",
-            enum: ["python", "javascript", "typescript", "vue", "generic"],
-            description: "Language hint. Auto-detected from file extension if path is provided.",
-          },
-        },
-      },
-    },
-    // ── Planning ─────────────────────────────────────────────────────────────
-    {
-      name: "plan_create",
-      description:
-        "Create a plan with user story, ordered tasks, and test criteria. " +
-        "Call BEFORE writing any code to establish intent and acceptance criteria.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          title:       { type: "string", description: "Short plan title." },
-          description: { type: "string", description: "What this plan accomplishes." },
-          user_story:  { type: "string", description: "As a [user], I want [goal], so that [benefit]." },
-          tasks: {
-            type: "array",
-            description: "Ordered list of implementation tasks (1–20).",
-            items: {
-              type: "object",
-              properties: {
-                title:         { type: "string" },
-                description:   { type: "string" },
-                test_criteria: { type: "string", description: "How to verify this task is done." },
-              },
-              required: ["title", "description", "test_criteria"],
-            },
-            minItems: 1,
-            maxItems: 20,
-          },
-        },
-        required: ["title", "description", "user_story", "tasks"],
-      },
-    },
-    {
-      name: "plan_list",
-      description: "List plans with progress summary. Defaults to active plans.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          status: {
-            type: "string",
-            enum: ["active", "completed", "abandoned", "all"],
-            description: "Filter by plan status (default: active).",
-          },
-        },
-      },
-    },
-    {
-      name: "plan_get",
-      description: "Get full plan details: tasks, test criteria, status, and notes.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          plan_id: { type: "number", description: "Plan ID from plan_create or plan_list." },
-        },
-        required: ["plan_id"],
-      },
-    },
-    {
-      name: "plan_update_task",
-      description:
-        "Update a task status. Auto-completes the plan when all tasks are done. " +
-        "Statuses: pending → in_progress → done (or blocked).",
-      inputSchema: {
-        type: "object",
-        properties: {
-          task_id: { type: "number", description: "Task ID from plan_get." },
-          status:  { type: "string", enum: ["pending", "in_progress", "done", "blocked"] },
-          note:    { type: "string", description: "Optional note appended to task history." },
-        },
-        required: ["task_id", "status"],
-      },
-    },
-    // ── Updater ──────────────────────────────────────────────────────────────
-    {
-      name: "update_lucid",
-      description:
-        "Check for a newer version of Lucid on npm and update automatically. " +
-        "For global npm installs: runs npm install -g @a13xu/lucid@latest. " +
-        "For local source installs: shows git pull + npm run build instructions. " +
-        "After updating, restart Claude Code to load the new version.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          force: {
-            type: "boolean",
-            description: "Force reinstall even if already on latest version (default false)",
-          },
-        },
-      },
-    },
-    // ── Web Dev Skills ───────────────────────────────────────────────────────
-    {
-      name: "generate_component",
-      description:
-        "Generate a complete component scaffold from a natural language description. " +
-        "Supports React (TSX/JSX) and Vue/Nuxt (Composition API + <script setup>). " +
-        "Styling options: Tailwind CSS, CSS Modules, or none.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          description: { type: "string", description: "Natural language description of the component" },
-          framework:   { type: "string", enum: ["react", "vue", "nuxt"], description: "Target framework" },
-          styling:     { type: "string", enum: ["tailwind", "css-modules", "none"], description: "Styling approach" },
-          typescript:  { type: "boolean", description: "Whether to use TypeScript" },
-        },
-        required: ["description", "framework", "styling", "typescript"],
-      },
-    },
-    {
-      name: "scaffold_page",
-      description:
-        "Generate a full page scaffold with layout, SEO head meta, and placeholder sections. " +
-        "Supports Nuxt (useHead), Next.js (Metadata API), and plain Vue.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          page_name:  { type: "string", description: "Page name (e.g. About, Dashboard)" },
-          framework:  { type: "string", enum: ["nuxt", "next", "vue"], description: "Target framework" },
-          sections:   { type: "array", items: { type: "string" }, description: "Section names (e.g. hero, features, footer)" },
-          seo_title:  { type: "string", description: "Optional SEO title" },
-        },
-        required: ["page_name", "framework", "sections"],
-      },
-    },
-    {
-      name: "seo_meta",
-      description:
-        "Generate complete SEO metadata for a page: HTML meta tags, Open Graph, Twitter Card, " +
-        "and JSON-LD structured data (Article, Product, WebSite, or WebPage).",
-      inputSchema: {
-        type: "object",
-        properties: {
-          title:       { type: "string", description: "Page title" },
-          description: { type: "string", description: "Meta description (≤160 chars recommended)" },
-          keywords:    { type: "array", items: { type: "string" }, description: "SEO keywords" },
-          page_type:   { type: "string", enum: ["article", "product", "landing", "home"], description: "Page type for JSON-LD" },
-          url:         { type: "string", description: "Canonical page URL" },
-          image_url:   { type: "string", description: "OG/Twitter image URL" },
-        },
-        required: ["title", "description", "keywords", "page_type"],
-      },
-    },
-    {
-      name: "accessibility_audit",
-      description:
-        "Audit HTML, JSX, or Vue template snippets for WCAG accessibility violations. " +
-        "Checks: missing alt text, unlabeled inputs, empty buttons/links, positive tabindex, " +
-        "non-interactive click handlers, open-in-new-tab links, and more. " +
-        "Returns severity (critical/warning/info), WCAG criterion, and corrected code.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          code:        { type: "string", description: "HTML, JSX, or Vue snippet to audit" },
-          wcag_level:  { type: "string", enum: ["A", "AA", "AAA"], description: "WCAG conformance level" },
-          framework:   { type: "string", enum: ["html", "jsx", "vue"], description: "Code framework" },
-        },
-        required: ["code", "wcag_level", "framework"],
-      },
-    },
-    {
-      name: "api_client",
-      description:
-        "Generate a typed TypeScript async function for a REST API endpoint. " +
-        "Includes full types, error handling (throws on non-2xx), and a usage example. " +
-        "Auth strategies: Bearer token, cookie, API key, or none.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          endpoint:        { type: "string", description: "API endpoint path (e.g. /users/:id)" },
-          method:          { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"] },
-          request_schema:  { type: "string", description: "TypeScript type for request body" },
-          response_schema: { type: "string", description: "TypeScript type for response" },
-          auth:            { type: "string", enum: ["bearer", "cookie", "apikey", "none"] },
-          base_url_var:    { type: "string", description: "Env var name for base URL (e.g. NEXT_PUBLIC_API_URL)" },
-        },
-        required: ["endpoint", "method", "auth"],
-      },
-    },
-    {
-      name: "test_generator",
-      description:
-        "Generate a complete test file for a function, component, or API handler. " +
-        "Covers: happy path, edge cases (empty/null/boundary), error path, and mock setup. " +
-        "Frameworks: Vitest, Jest, or Playwright (e2e). " +
-        "Component testing: Vue Test Utils or React Testing Library.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          code:               { type: "string", description: "Source code to generate tests for" },
-          test_framework:     { type: "string", enum: ["vitest", "jest", "playwright"] },
-          test_type:          { type: "string", enum: ["unit", "integration", "e2e"] },
-          component_framework: { type: "string", enum: ["vue", "react", "none"] },
-        },
-        required: ["code", "test_framework", "test_type"],
-      },
-    },
-    {
-      name: "responsive_layout",
-      description:
-        "Generate a responsive mobile-first layout from a wireframe description. " +
-        "Outputs: Tailwind CSS utility classes, CSS Grid with named areas, or Flexbox with media queries. " +
-        "Container types: full-width, centered max-width, or sidebar layout.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          description: { type: "string", description: "Wireframe description (e.g. 'sidebar + main + right panel')" },
-          framework:   { type: "string", enum: ["tailwind", "css-grid", "flexbox"] },
-          breakpoints: { type: "array", items: { type: "string" }, description: "Breakpoint names (e.g. ['mobile', 'tablet', 'desktop'])" },
-          container:   { type: "string", enum: ["full", "centered", "sidebar"] },
-        },
-        required: ["description", "framework", "breakpoints"],
-      },
-    },
-    {
-      name: "security_scan",
-      description:
-        "Scan JavaScript/TypeScript/HTML/Vue code for common web security vulnerabilities. " +
-        "Detects: XSS (innerHTML, v-html, dangerouslySetInnerHTML), code injection (eval, new Function), " +
-        "SQL injection, hardcoded secrets, open redirects, prototype pollution, path traversal, " +
-        "render-blocking scripts, and insecure CORS. Context-aware: frontend vs backend vs API rules. " +
-        "Complements validate_file (logic drift) — this focuses on web security patterns.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          code:     { type: "string", description: "Code snippet to scan" },
-          language: { type: "string", enum: ["javascript", "typescript", "html", "vue"] },
-          context:  { type: "string", enum: ["frontend", "backend", "api"] },
-        },
-        required: ["code", "language", "context"],
-      },
-    },
-    {
-      name: "design_tokens",
-      description:
-        "Generate a complete design system token set from a brand color and mood. " +
-        "Produces: 11-step color scales (50–950), neutral scale, semantic color aliases, " +
-        "typography scale, spacing, border-radius, and shadow tokens. " +
-        "Output formats: CSS custom properties, Tailwind config, or JSON.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          brand_name:    { type: "string", description: "Brand or project name" },
-          primary_color: { type: "string", description: "Primary color as hex (#3B82F6) or name (blue)" },
-          mood:          { type: "string", enum: ["minimal", "bold", "playful", "corporate"] },
-          output_format: { type: "string", enum: ["css-variables", "tailwind-config", "json"] },
-        },
-        required: ["brand_name", "primary_color", "mood", "output_format"],
-      },
-    },
-    {
-      name: "perf_hints",
-      description:
-        "Analyze a component or page file for Core Web Vitals (CWV) and web performance issues. " +
-        "Detects: missing LCP image priority, images without dimensions (CLS), render-blocking scripts, " +
-        "fetch-in-render (TTFB), heavy click handlers (INP), missing useMemo/computed, " +
-        "whole-library imports, and inline style objects. Issues ranked by CWV metric impact.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          code:      { type: "string", description: "Component or page source code to analyze" },
-          framework: { type: "string", enum: ["react", "vue", "nuxt", "vanilla"] },
-          context:   { type: "string", enum: ["component", "page", "layout"] },
-        },
-        required: ["code", "framework", "context"],
-      },
-    },
-  ],
+    }, null, 2),
+  }],
 }));
 
 // ---------------------------------------------------------------------------
-// Tool handlers
+// Prompts — reusable workflows the user can invoke as slash commands
 // ---------------------------------------------------------------------------
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
+server.registerPrompt("validate-changes", {
+  title: "Validate recent changes",
+  description: "Run the Logic Guardian 5-pass validation across files modified in the last N hours.",
+  argsSchema: { hours: z.string().optional() },
+}, ({ hours }) => {
+  const h = hours ? Number(hours) : 24;
+  return {
+    messages: [{
+      role: "user",
+      content: {
+        type: "text",
+        text:
+          `Run Logic Guardian validation on every file modified in the last ${h} hours.\n\n` +
+          `Steps:\n` +
+          `1. Call \`get_recent\` with hours=${h} to list changed files.\n` +
+          `2. For EACH file, call \`validate_file(path)\` and \`check_code_quality(path)\`.\n` +
+          `3. Apply the 5-pass checklist from \`get_checklist\`.\n` +
+          `4. Report: per-file findings + a single summary table (file × pass × issue count).\n` +
+          `5. Stop and ask before fixing anything — report only.`,
+      },
+    }],
+  };
+});
 
-  // Security: rate limit + WAF check before any execution
-  const guard = guardRequest(name, args);
-  if (guard.blocked) {
-    return { content: [{ type: "text", text: guard.reason ?? "Request blocked by security guard" }], isError: true };
-  }
+server.registerPrompt("audit-file", {
+  title: "Audit a single file",
+  description: "Run the full Lucid audit pipeline (validate + drift + coding rules + security) on one file.",
+  argsSchema: { path: z.string() },
+}, ({ path }) => ({
+  messages: [{
+    role: "user",
+    content: {
+      type: "text",
+      text:
+        `Audit \`${path}\` with the full Lucid pipeline:\n\n` +
+        `1. \`validate_file(path="${path}")\` — Logic Guardian drift detection.\n` +
+        `2. \`check_code_quality(path="${path}")\` — 25 Golden Rules.\n` +
+        `3. Read the file content, then \`security_scan(code, language, context)\` if it's web code.\n` +
+        `4. Apply the 5-pass checklist (\`get_checklist\`).\n` +
+        `5. Report findings grouped by severity (high/medium/low). Do not fix yet.`,
+    },
+  }],
+}));
 
-  try {
-    let text: string;
+server.registerPrompt("plan-feature", {
+  title: "Plan a new feature",
+  description: "Scaffold a Lucid plan from a feature description with tasks and test criteria.",
+  argsSchema: { feature: z.string() },
+}, ({ feature }) => ({
+  messages: [{
+    role: "user",
+    content: {
+      type: "text",
+      text:
+        `Create a Lucid plan for this feature:\n\n"${feature}"\n\n` +
+        `Steps:\n` +
+        `1. Call \`smart_context(query="${feature}", task_type="moderate")\` to gather relevant files.\n` +
+        `2. Draft a user story: "As a [user], I want [goal], so that [benefit]."\n` +
+        `3. Break into 3–8 tasks. EACH task needs explicit \`test_criteria\` (how to verify done).\n` +
+        `4. Call \`plan_create({title, description, user_story, tasks})\`.\n` +
+        `5. Show the plan ID and the task list.`,
+    },
+  }],
+}));
 
-    switch (name) {
-      // Memory
-      case "remember":    text = remember(stmts, RememberSchema.parse(args)); break;
-      case "relate":      text = relate(stmts, RelateSchema.parse(args)); break;
-      case "recall":      text = recall(stmts, RecallSchema.parse(args)); break;
-      case "recall_all":  text = recallAll(db, stmts); break;
-      case "forget":      text = forget(stmts, ForgetSchema.parse(args)); break;
-      case "memory_stats": text = memoryStats(db, stmts); break;
-
-      // Init & Sync
-      case "init_project":  text = await handleInitProject(stmts, InitProjectSchema.parse(args)); break;
-      case "sync_file":     text = handleSyncFile(stmts, SyncFileSchema.parse(args)); break;
-      case "sync_project":  text = handleSyncProject(stmts, SyncProjectSchema.parse(args)); break;
-
-      // Grep
-      case "grep_code":     text = handleGrepCode(stmts, GrepCodeSchema.parse(args)); break;
-
-      // Context & Token Optimization
-      case "get_context":   text = await handleGetContext(stmts, GetContextSchema.parse(args)); break;
-      case "get_recent":    text = handleGetRecent(stmts, GetRecentSchema.parse(args)); break;
-
-      // Smart Context + Model Advisor
-      case "smart_context":   text = await handleSmartContext(stmts, SmartContextSchema.parse(args)); break;
-      case "suggest_model":   text = handleSuggestModel(SuggestModelSchema.parse(args)); break;
-      case "compress_text":   text = await handleCompressText(CompressTextSchema.parse(args)); break;
-
-      // Reward System
-      case "reward":        text = handleReward(stmts, RewardSchema.parse(args)); break;
-      case "penalize":      text = handlePenalize(stmts, PenalizeSchema.parse(args)); break;
-      case "show_rewards":  text = handleShowRewards(stmts, ShowRewardsSchema.parse(args)); break;
-
-      // Logic Guardian
-      case "validate_file": text = handleValidateFile(ValidateFileSchema.parse(args)); break;
-      case "check_drift":   text = handleCheckDrift(CheckDriftSchema.parse(args)); break;
-      case "get_checklist": text = handleGetChecklist(); break;
-
-      // Coding Guard
-      case "coding_rules":       text = handleGetCodingRules(); break;
-      case "check_code_quality": text = handleCheckCodeQuality(CheckCodeQualitySchema.parse(args)); break;
-
-      // Planning
-      case "plan_create":      text = handlePlanCreate(db, stmts, PlanCreateSchema.parse(args)); break;
-      case "plan_list":        text = handlePlanList(stmts, PlanListSchema.parse(args)); break;
-      case "plan_get":         text = handlePlanGet(stmts, PlanGetSchema.parse(args)); break;
-      case "plan_update_task": text = handlePlanUpdateTask(stmts, PlanUpdateTaskSchema.parse(args)); break;
-
-      // Updater
-      case "update_lucid": text = await handleUpdateLucid(UpdateLucidSchema.parse(args)); break;
-
-      // Web Dev Skills
-      case "generate_component":   text = handleGenerateComponent(GenerateComponentSchema.parse(args)); break;
-      case "scaffold_page":        text = handleScaffoldPage(ScaffoldPageSchema.parse(args)); break;
-      case "seo_meta":             text = handleSeoMeta(SeoMetaSchema.parse(args)); break;
-      case "accessibility_audit":  text = handleAccessibilityAudit(AccessibilityAuditSchema.parse(args)); break;
-      case "api_client":           text = handleApiClient(ApiClientSchema.parse(args)); break;
-      case "test_generator":       text = handleTestGenerator(TestGeneratorSchema.parse(args)); break;
-      case "responsive_layout":    text = handleResponsiveLayout(ResponsiveLayoutSchema.parse(args)); break;
-      case "security_scan":        text = handleSecurityScan(SecurityScanSchema.parse(args)); break;
-      case "design_tokens":        text = handleDesignTokens(DesignTokensSchema.parse(args)); break;
-      case "perf_hints":           text = handlePerfHints(PerfHintsSchema.parse(args)); break;
-
-      default:
-        return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
-    }
-
-    // Security: scan output for sensitive data leakage
-    return { content: [{ type: "text", text: guardOutput(name, text) }] };
-  } catch (err) {
-    const message = err instanceof z.ZodError
-      ? `Validation error: ${err.errors.map((e) => e.message).join(", ")}`
-      : err instanceof Error ? err.message : String(err);
-    return { content: [{ type: "text", text: `Error: ${message}` }], isError: true };
-  }
+server.registerPrompt("security-review", {
+  title: "Security review of recent changes",
+  description: "Scan recently changed web code for XSS, injection, secrets, SSRF, and OWASP Top 10 patterns.",
+  argsSchema: { hours: z.string().optional() },
+}, ({ hours }) => {
+  const h = hours ? Number(hours) : 24;
+  return {
+    messages: [{
+      role: "user",
+      content: {
+        type: "text",
+        text:
+          `Security review of files changed in the last ${h} hours.\n\n` +
+          `1. Call \`get_recent\` with hours=${h}.\n` +
+          `2. Filter to JS/TS/HTML/Vue files only.\n` +
+          `3. For each, read content and call \`security_scan(code, language, context)\` ` +
+          `with context inferred from the path (frontend/backend/api).\n` +
+          `4. Report findings as a table: file × vuln class × severity × line.\n` +
+          `5. Recommend fixes only after the report is complete.`,
+      },
+    }],
+  };
 });
 
 // ---------------------------------------------------------------------------
@@ -913,7 +791,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-console.error(`[lucid] Server v${getCurrentVersion()} started on stdio.`);
+console.error(`[lucid] Server v${SERVER_VERSION} started on stdio (tools + resources + prompts).`);
 
 // Non-blocking — logs to stderr if update is available
 checkForUpdatesOnStartup().catch(() => {});

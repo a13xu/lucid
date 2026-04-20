@@ -1,4 +1,8 @@
-export const CODING_RULES = `# 25 Golden Rules — Code Quality Checklist
+import { join } from "path";
+import { homedir } from "os";
+import { existsSync, readFileSync } from "fs";
+
+export const ORIGINAL_CODING_RULES = `# 25 Golden Rules — Code Quality Checklist
 
 ## Section 1: General Quality (Rules 1–10)
 
@@ -95,3 +99,19 @@ export const CODING_RULES = `# 25 Golden Rules — Code Quality Checklist
 3. Verify rules 3, 4, 8 manually (naming and nesting are hard to auto-detect fully).
 4. For frontend work, verify rules 12, 15, 16 — these are the most common oversights.
 `;
+
+// Opt-in: if a pre-compressed copy exists at ~/.lucid/compressed-prompts/coding-rules.txt
+// (produced by `npm run compress-prompts`), serve that instead. Falls back to the
+// original on any error so this is always safe.
+function loadCompressed(): string | null {
+  try {
+    const p = join(homedir(), ".lucid", "compressed-prompts", "coding-rules.txt");
+    if (!existsSync(p)) return null;
+    const text = readFileSync(p, "utf-8").trim();
+    return text.length > 0 ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+export const CODING_RULES = loadCompressed() ?? ORIGINAL_CODING_RULES;
