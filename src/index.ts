@@ -61,6 +61,17 @@ import {
 import { handleSmartContext, SmartContextSchema } from "./tools/smart-context.js";
 import { handleSuggestModel, SuggestModelSchema } from "./tools/model-advisor.js";
 import { handleCompressText, CompressTextSchema } from "./tools/compress.js";
+import {
+  handleBackupFile, BackupFileSchema,
+  handleRestoreFile, RestoreFileSchema,
+  handleCheckTruncateRisk, CheckTruncateRiskSchema,
+} from "./tools/backup.js";
+import { handleSessionStatus, SessionStatusSchema } from "./tools/session.js";
+import {
+  handleDelegateLocal, DelegateLocalSchema,
+  handleLocalLlmStatus, LocalLlmStatusSchema,
+} from "./tools/delegate-local.js";
+import { loadLocalConfig } from "./local-llm/config.js";
 
 // ---------------------------------------------------------------------------
 // CLI mode: lucid watch | lucid status | lucid stop
@@ -71,6 +82,241 @@ const [,, _cliCmd, ..._cliArgs] = process.argv;
 if (_cliCmd === "watch" || _cliCmd === "status" || _cliCmd === "stop") {
   await runCli(_cliCmd, _cliArgs);
   process.exit(0);
+}
+
+if (_cliCmd === "guard") {
+  const exitCode = await runGuardCli(_cliArgs);
+  process.exit(exitCode);
+}
+
+if (_cliCmd === "session") {
+  const exitCode = await runSessionCli(_cliArgs);
+  process.exit(exitCode);
+}
+
+if (_cliCmd === "local") {
+  const { runLocalLlmCli } = await import("./local-llm/setup-cli.js");
+  const exitCode = await runLocalLlmCli(_cliArgs);
+  process.exit(exitCode);
+}
+
+// ---------------------------------------------------------------------------
+// `lucid guard <subcmd>` — invoked from Claude Code hooks (PreToolUse, etc.)
+//
+// Subcommands:
+//   pre-edit              Read PreToolUse JSON from stdin, snapshot the file,
+//                         then assess truncate risk. Exit 2 = block (hard).
+//   pre-edit --path P     Same, but path provided as flag (no stdin parse).
+//   clear                 Clear cascade lock by purging recent truncate_events.
+//   status                Show cascade-lock status + last events.
+// ---------------------------------------------------------------------------
+
+async function runGuardCli(args: string[]): Promise<number> {
+  const sub = args[0];
+  const { initDatabase, prepareStatements } = await import("./database.js");
+  const db = initDatabase();
+  const stmts = prepareStatements(db);
+
+  if (sub === "clear") {
+    db.exec("DELETE FROM truncate_events");
+    process.stderr.write("[Lucid guard] Cascade lock cleared.\n");
+    return 0;
+  }
+
+  if (sub === "status") {
+    const { isCascadeBlocked, TUNABLES } = await import("./guardian/truncate-guard.js");
+    const cascade = isCascadeBlocked(stmts);
+    const since = Math.floor(Date.now() / 1000) - TUNABLES.CASCADE_WINDOW_SECONDS;
+    const events = stmts.recentTruncateEvents.all(since);
+    process.stdout.write(
+      `Cascade locked: ${cascade.blocked} (${cascade.count}/${TUNABLES.CASCADE_THRESHOLD} ` +
+      `within ${TUNABLES.CASCADE_WINDOW_SECONDS}s)\n`
+    );
+    for (const e of events) {
+      process.stdout.write(
+        `  ${new Date(e.created_at * 1000).toISOString()} ` +
+        `${e.filepath} ${e.prev_size}B→${e.new_size}B (${(e.shrink_ratio * 100).toFixed(0)}%)\n`
+      );
+    }
+    return 0;
+  }
+
+  if (sub === "pre-edit") {
+    return await guardPreEdit(stmts, args.slice(1));
+  }
+
+  process.stderr.write(`Usage: lucid guard <pre-edit|clear|status>\n`);
+  return 64; // EX_USAGE
+}
+
+interface HookPayload {
+  tool_name?: string;
+  tool_input?: {
+    file_path?: string;
+    path?: string;
+    content?: string;
+    new_string?: string;
+    edits?: Array<{ old_string?: string; new_string?: string }>;
+  };
+}
+
+async function guardPreEdit(
+  stmts: import("./database.js").Statements,
+  flagArgs: string[],
+): Promise<number> {
+  const { backupFile, assessTruncate, recordTruncateEvent } =
+    await import("./guardian/truncate-guard.js");
+
+  // Override switch — never blocks. Useful for one-off legitimate truncates.
+  if (process.env["LUCID_TRUNCATE_OVERRIDE"] === "1") return 0;
+
+  const pathFlagIdx = flagArgs.indexOf("--path");
+  let path = pathFlagIdx >= 0 ? flagArgs[pathFlagIdx + 1] : undefined;
+  let content: string | null = null;
+  let toolName = "Write";
+
+  // Try parsing PreToolUse JSON from stdin (Claude Code hook protocol).
+  // Skip stdin read when --path is given OR when stdin is a TTY (manual run).
+  if (!path && !process.stdin.isTTY) {
+    const raw = await readStdin();
+    if (raw.trim()) {
+      try {
+        const payload = JSON.parse(raw) as HookPayload;
+        toolName = payload.tool_name ?? "Write";
+        const ti = payload.tool_input ?? {};
+        path = ti.file_path ?? ti.path;
+        if (typeof ti.content === "string") content = ti.content;
+        else if (Array.isArray(ti.edits)) {
+          // MultiEdit — sum up final state crudely: use new_strings concatenated.
+          content = ti.edits.map((e) => e.new_string ?? "").join("\n");
+        } else if (typeof ti.new_string === "string") {
+          content = ti.new_string;
+        }
+      } catch {
+        // Non-JSON stdin — ignore, fall through to "no path" error.
+      }
+    }
+  }
+
+  if (!path) {
+    process.stderr.write("[Lucid guard] No file path in hook input — allowing.\n");
+    return 0;
+  }
+
+  // Snapshot BEFORE assessing — even if we end up blocking, we want the version
+  // that's about to be overwritten safely stored.
+  const snap = backupFile(stmts, path, `pre-${toolName.toLowerCase()}`);
+  if (snap.saved) {
+    process.stderr.write(`[Lucid guard] 📸 Snapshot stored for ${path}\n`);
+  }
+
+  const verdict = assessTruncate(path, content, stmts);
+  if (!verdict.blocked) return 0;
+
+  recordTruncateEvent(stmts, path, verdict.prevSize, verdict.newSize, true);
+
+  // Exit code 2 → Claude Code blocks the tool call and surfaces stderr.
+  process.stderr.write(
+    `🛑 [Lucid guard] BLOCK [${verdict.rule}] ${path}\n` +
+    `   ${verdict.reason}\n` +
+    (verdict.cascade
+      ? `   Override: set LUCID_TRUNCATE_OVERRIDE=1 or run "lucid guard clear".\n`
+      : `   prev=${verdict.prevSize}B new=${verdict.newSize}B keep=${(verdict.shrinkRatio * 100).toFixed(0)}%\n` +
+        `   Restore via: restore_file(path="${path}")\n`)
+  );
+  return 2;
+}
+
+// ---------------------------------------------------------------------------
+// `lucid session <subcmd>` — invoked from UserPromptSubmit & PreCompact hooks.
+//
+// Subcommands:
+//   tick           Read UserPromptSubmit JSON from stdin → emit hints to stdout
+//                  (Claude Code injects stdout as additional context).
+//   compact        Read PreCompact JSON from stdin → reset session counters.
+//   status         Print recent sessions + active hint thresholds.
+//   reset [--id S] Reset a single session counter (or the latest if no --id).
+// ---------------------------------------------------------------------------
+
+async function runSessionCli(args: string[]): Promise<number> {
+  const sub = args[0];
+  const { initDatabase, prepareStatements } = await import("./database.js");
+  const db = initDatabase();
+  const stmts = prepareStatements(db);
+
+  if (sub === "tick")    return await sessionTickCli(stmts);
+  if (sub === "compact") return await sessionCompactCli(stmts);
+  if (sub === "status") {
+    const { handleSessionStatus } = await import("./tools/session.js");
+    process.stdout.write(handleSessionStatus(stmts, { limit: 10 }) + "\n");
+    return 0;
+  }
+  if (sub === "reset") {
+    const idIdx = args.indexOf("--id");
+    if (idIdx >= 0 && args[idIdx + 1]) {
+      stmts.resetCliSessionCount.run(args[idIdx + 1]!);
+      process.stderr.write(`[Lucid session] Reset counters for ${args[idIdx + 1]}\n`);
+    } else {
+      const recent = stmts.recentCliSessions.all(1);
+      if (recent.length === 0) { process.stderr.write("No sessions tracked.\n"); return 0; }
+      stmts.resetCliSessionCount.run(recent[0]!.session_id);
+      process.stderr.write(`[Lucid session] Reset counters for ${recent[0]!.session_id}\n`);
+    }
+    return 0;
+  }
+
+  process.stderr.write(`Usage: lucid session <tick|compact|status|reset>\n`);
+  return 64;
+}
+
+interface SessionHookPayload {
+  session_id?: string;
+  cwd?: string;
+  hook_event_name?: string;
+}
+
+async function sessionTickCli(
+  stmts: import("./database.js").Statements,
+): Promise<number> {
+  const { tickSession } = await import("./guardian/session-tracker.js");
+  const payload = await readHookPayload<SessionHookPayload>();
+  const sid = payload?.session_id ?? "unknown-session";
+  const cwd = payload?.cwd ?? null;
+
+  const result = tickSession(stmts, sid, cwd);
+
+  // Emit hints to stdout — Claude Code injects them as additional context.
+  for (const h of result.hints) process.stdout.write(h + "\n");
+  return 0;
+}
+
+async function sessionCompactCli(
+  stmts: import("./database.js").Statements,
+): Promise<number> {
+  const { markCompactEvent } = await import("./guardian/session-tracker.js");
+  const payload = await readHookPayload<SessionHookPayload>();
+  const sid = payload?.session_id ?? "unknown-session";
+  markCompactEvent(stmts, sid);
+  process.stderr.write(`[Lucid session] /compact recorded — counters reset for ${sid}\n`);
+  return 0;
+}
+
+async function readHookPayload<T>(): Promise<T | null> {
+  if (process.stdin.isTTY) return null;
+  const raw = await readStdin();
+  if (!raw.trim()) return null;
+  try { return JSON.parse(raw) as T; } catch { return null; }
+}
+
+function readStdin(): Promise<string> {
+  return new Promise((resolveStdin) => {
+    let buf = "";
+    const timer = setTimeout(() => resolveStdin(buf), 250);
+    process.stdin.setEncoding("utf-8");
+    process.stdin.on("data", (chunk) => { buf += chunk; });
+    process.stdin.on("end", () => { clearTimeout(timer); resolveStdin(buf); });
+    process.stdin.on("error", () => { clearTimeout(timer); resolveStdin(buf); });
+  });
 }
 
 async function runCli(cmd: string, args: string[]): Promise<void> {
@@ -177,6 +423,12 @@ if (_qdrantUrl) { try { allowHost(_qdrantUrl); } catch { /* ignore */ } }
 const _embeddingUrl = process.env["EMBEDDING_URL"] ?? _appCfg.qdrant?.embeddingUrl;
 if (_embeddingUrl) { try { allowHost(_embeddingUrl); } catch { /* ignore */ } }
 else { allowHost("https://api.openai.com"); }
+
+// Local-LLM endpoint (may be remote — user-opted-in via `lucid local init`)
+const _localCfg = loadLocalConfig();
+if (_localCfg?.enabled) {
+  try { allowHost(_localCfg.endpoint); } catch { /* ignore */ }
+}
 
 // ---------------------------------------------------------------------------
 // MCP Server (high-level McpServer API, SDK 1.27+)
@@ -476,6 +728,68 @@ server.registerTool("check_code_quality", {
     "deep nesting, dead code, inline styles, prop explosion, fetch-in-component.",
   inputSchema: checkCodeQualityShape,
 }, tx("check_code_quality", (args) => handleCheckCodeQuality(CheckCodeQualitySchema.parse(args))));
+
+// ---------------------------------------------------------------------------
+// Tools — Local LLM (Ollama / LM Studio / llama.cpp / remote endpoint)
+// ---------------------------------------------------------------------------
+
+server.registerTool("delegate_local", {
+  title: "Delegate to Local LLM",
+  description:
+    "Send a prompt to the user-configured local LLM (Ollama / LM Studio / llama.cpp / remote " +
+    "endpoint). Returns the raw completion. Configure once via `lucid local init`. Best for " +
+    "small specialized tasks (docstrings, type hints, simple refactors, regex). Claude should " +
+    "review the output before applying it via Edit/Write.",
+  inputSchema: DelegateLocalSchema.shape,
+}, tx("delegate_local", async (args) => handleDelegateLocal(args)));
+
+server.registerTool("local_llm_status", {
+  title: "Local LLM Status",
+  description:
+    "Inspect the local-LLM configuration: runtime, endpoint, model, reachability. " +
+    "Returns setup instructions if not yet configured.",
+  inputSchema: LocalLlmStatusSchema.shape,
+}, tx("local_llm_status", async () => handleLocalLlmStatus()));
+
+// ---------------------------------------------------------------------------
+// Tools — Session Cost Tracker
+// ---------------------------------------------------------------------------
+
+server.registerTool("session_status", {
+  title: "Session Status",
+  description:
+    "Show recent Claude Code sessions with prompt counts, idle time, and /compact " +
+    "history. Use to inspect when /compact or /clear hints are about to fire.",
+  inputSchema: SessionStatusSchema.shape,
+}, tx("session_status", (args) => handleSessionStatus(stmts, args)));
+
+// ---------------------------------------------------------------------------
+// Tools — Backup & Truncate Guard
+// ---------------------------------------------------------------------------
+
+server.registerTool("backup_file", {
+  title: "Backup File",
+  description:
+    "Snapshot the current on-disk content of a file into Lucid's versioned backup store " +
+    "(zlib-compressed, last 10 versions kept). Use before risky edits.",
+  inputSchema: BackupFileSchema.shape,
+}, tx("backup_file", (args) => handleBackupFile(stmts, args)));
+
+server.registerTool("restore_file", {
+  title: "Restore File",
+  description:
+    "Restore a file from a previous Lucid backup. version=1 is the latest snapshot, " +
+    "2 is the one before, etc. Pass dry_run=true to preview without writing.",
+  inputSchema: RestoreFileSchema.shape,
+}, tx("restore_file", (args) => handleRestoreFile(stmts, args)));
+
+server.registerTool("check_truncate_risk", {
+  title: "Check Truncate Risk",
+  description:
+    "Assess whether writing new_content (or new_size) to path would constitute a destructive " +
+    "truncate (empty/whitespace overwrite, >70% shrink, or active cascade lock). Read-only by default.",
+  inputSchema: CheckTruncateRiskSchema.shape,
+}, tx("check_truncate_risk", (args) => handleCheckTruncateRisk(stmts, args)));
 
 // ---------------------------------------------------------------------------
 // Tools — Planning

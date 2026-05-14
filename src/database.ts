@@ -178,6 +178,46 @@ function createSchema(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_plan_tasks_plan ON plan_tasks(plan_id, seq);
     CREATE INDEX IF NOT EXISTS idx_plans_status    ON plans(status);
+
+    -- Versioned backups of file content (last N kept per file)
+    CREATE TABLE IF NOT EXISTS file_backups (
+      id              INTEGER PRIMARY KEY,
+      filepath        TEXT NOT NULL,
+      content         BLOB NOT NULL,
+      content_hash    TEXT NOT NULL,
+      original_size   INTEGER NOT NULL,
+      compressed_size INTEGER NOT NULL,
+      reason          TEXT NOT NULL DEFAULT 'manual',
+      created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_fb_path     ON file_backups(filepath, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_fb_created  ON file_backups(created_at);
+
+    -- Claude Code session tracking — drives /compact and /clear hints
+    CREATE TABLE IF NOT EXISTS cli_sessions (
+      session_id              TEXT PRIMARY KEY,
+      started_at              INTEGER NOT NULL,
+      last_activity_at        INTEGER NOT NULL,
+      prompt_count            INTEGER NOT NULL DEFAULT 0,
+      last_compact_hint_at    INTEGER,
+      last_clear_hint_at      INTEGER,
+      last_compact_event_at   INTEGER,
+      compact_count           INTEGER NOT NULL DEFAULT 0,
+      cwd                     TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_cli_sessions_activity ON cli_sessions(last_activity_at DESC);
+
+    -- Truncate-event log (drives cascade detection)
+    CREATE TABLE IF NOT EXISTS truncate_events (
+      id           INTEGER PRIMARY KEY,
+      filepath     TEXT NOT NULL,
+      prev_size    INTEGER NOT NULL,
+      new_size     INTEGER NOT NULL,
+      shrink_ratio REAL NOT NULL,
+      blocked      INTEGER NOT NULL DEFAULT 1,
+      created_at   INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE INDEX IF NOT EXISTS idx_te_created ON truncate_events(created_at DESC);
   `);
 }
 
@@ -235,6 +275,39 @@ export interface PlanRow {
   status: string;
   created_at: number;
   updated_at: number;
+}
+
+export interface FileBackupRow {
+  id: number;
+  filepath: string;
+  content: Buffer;
+  content_hash: string;
+  original_size: number;
+  compressed_size: number;
+  reason: string;
+  created_at: number;
+}
+
+export interface CliSessionRow {
+  session_id: string;
+  started_at: number;
+  last_activity_at: number;
+  prompt_count: number;
+  last_compact_hint_at: number | null;
+  last_clear_hint_at:   number | null;
+  last_compact_event_at: number | null;
+  compact_count: number;
+  cwd: string | null;
+}
+
+export interface TruncateEventRow {
+  id: number;
+  filepath: string;
+  prev_size: number;
+  new_size: number;
+  shrink_ratio: number;
+  blocked: number;
+  created_at: number;
 }
 
 export interface PlanTaskRow {
@@ -298,6 +371,26 @@ export interface Statements {
   getTaskById:            Stmt<[number], PlanTaskRow>;
   updateTaskStatus:       WriteStmt<[string, string, number]>;           // status, notes, id
   countRemainingTasks:    Stmt<[number], { count: number }>;             // plan_id → tasks != 'done'
+  // file_backups (versioned snapshots — last N kept per file)
+  insertBackup:           WriteStmt<[string, Buffer, string, number, number, string]>;
+  getBackupsByPath:       Stmt<[string], FileBackupRow>;
+  getLatestBackup:        Stmt<[string], FileBackupRow>;
+  getBackupById:          Stmt<[number], FileBackupRow>;
+  deleteOldBackups:       WriteStmt<[string, string, number]>;           // filepath, filepath, keep_count
+  countBackups:           Stmt<[string], { count: number }>;
+  // truncate_events (cascade detection)
+  insertTruncateEvent:    WriteStmt<[string, number, number, number, number]>; // path, prev, new, ratio, blocked
+  recentTruncateEvents:   Stmt<[number], TruncateEventRow>;              // since_ts
+  countRecentTruncates:   Stmt<[number], { count: number }>;             // since_ts
+  // cli_sessions (cost / compact tracking)
+  getCliSession:          Stmt<[string], CliSessionRow>;
+  insertCliSession:       WriteStmt<[string, number, number, string | null]>;  // sid, started, last_activity, cwd
+  tickCliSession:         WriteStmt<[number, string]>;                          // now, sid → ++prompt_count
+  markCompactHint:        WriteStmt<[number, string]>;
+  markClearHint:          WriteStmt<[number, string]>;
+  markCompactEvent:       WriteStmt<[number, string]>;
+  recentCliSessions:      Stmt<[number], CliSessionRow>;                        // limit
+  resetCliSessionCount:   WriteStmt<[string]>;                                  // sid (after compact)
 }
 
 export function prepareStatements(db: Database.Database): Statements {
@@ -504,6 +597,103 @@ export function prepareStatements(db: Database.Database): Statements {
 
     countRemainingTasks: db.prepare<[number], { count: number }>(
       "SELECT COUNT(*) as count FROM plan_tasks WHERE plan_id = ? AND status != 'done'"
+    ),
+
+    // file_backups
+    insertBackup: db.prepare<[string, Buffer, string, number, number, string], unknown>(
+      `INSERT INTO file_backups (filepath, content, content_hash, original_size, compressed_size, reason)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ),
+
+    getBackupsByPath: db.prepare<[string], FileBackupRow>(
+      "SELECT * FROM file_backups WHERE filepath = ? ORDER BY created_at DESC, id DESC"
+    ),
+
+    getLatestBackup: db.prepare<[string], FileBackupRow>(
+      "SELECT * FROM file_backups WHERE filepath = ? ORDER BY created_at DESC, id DESC LIMIT 1"
+    ),
+
+    getBackupById: db.prepare<[number], FileBackupRow>(
+      "SELECT * FROM file_backups WHERE id = ?"
+    ),
+
+    deleteOldBackups: db.prepare<[string, string, number], unknown>(
+      `DELETE FROM file_backups
+       WHERE filepath = ?
+         AND id NOT IN (
+           SELECT id FROM file_backups
+           WHERE filepath = ?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?
+         )`
+    ),
+
+    countBackups: db.prepare<[string], { count: number }>(
+      "SELECT COUNT(*) as count FROM file_backups WHERE filepath = ?"
+    ),
+
+    // truncate_events
+    insertTruncateEvent: db.prepare<[string, number, number, number, number], unknown>(
+      `INSERT INTO truncate_events (filepath, prev_size, new_size, shrink_ratio, blocked)
+       VALUES (?, ?, ?, ?, ?)`
+    ),
+
+    recentTruncateEvents: db.prepare<[number], TruncateEventRow>(
+      "SELECT * FROM truncate_events WHERE created_at >= ? ORDER BY created_at DESC"
+    ),
+
+    countRecentTruncates: db.prepare<[number], { count: number }>(
+      "SELECT COUNT(*) as count FROM truncate_events WHERE created_at >= ? AND blocked = 1"
+    ),
+
+    // cli_sessions
+    getCliSession: db.prepare<[string], CliSessionRow>(
+      "SELECT * FROM cli_sessions WHERE session_id = ?"
+    ),
+
+    insertCliSession: db.prepare<[string, number, number, string | null], unknown>(
+      `INSERT INTO cli_sessions (session_id, started_at, last_activity_at, prompt_count, cwd)
+       VALUES (?, ?, ?, 1, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         last_activity_at = excluded.last_activity_at,
+         prompt_count     = cli_sessions.prompt_count + 1`
+    ),
+
+    tickCliSession: db.prepare<[number, string], unknown>(
+      `UPDATE cli_sessions SET
+         last_activity_at = ?,
+         prompt_count     = prompt_count + 1
+       WHERE session_id = ?`
+    ),
+
+    markCompactHint: db.prepare<[number, string], unknown>(
+      "UPDATE cli_sessions SET last_compact_hint_at = ? WHERE session_id = ?"
+    ),
+
+    markClearHint: db.prepare<[number, string], unknown>(
+      "UPDATE cli_sessions SET last_clear_hint_at = ? WHERE session_id = ?"
+    ),
+
+    markCompactEvent: db.prepare<[number, string], unknown>(
+      `UPDATE cli_sessions SET
+         last_compact_event_at = ?,
+         compact_count         = compact_count + 1,
+         prompt_count          = 0,
+         last_compact_hint_at  = NULL,
+         last_clear_hint_at    = NULL
+       WHERE session_id = ?`
+    ),
+
+    recentCliSessions: db.prepare<[number], CliSessionRow>(
+      "SELECT * FROM cli_sessions ORDER BY last_activity_at DESC LIMIT ?"
+    ),
+
+    resetCliSessionCount: db.prepare<[string], unknown>(
+      `UPDATE cli_sessions SET
+         prompt_count = 0,
+         last_compact_hint_at = NULL,
+         last_clear_hint_at   = NULL
+       WHERE session_id = ?`
     ),
   };
 }
