@@ -10,7 +10,7 @@ import { implicitRewardFromSync } from "../memory/experience.js";
 import { indexFileInQdrant } from "../retrieval/qdrant.js";
 import { loadConfig, getQdrantConfig } from "../config.js";
 
-const SUPPORTED_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".vue", ".py", ".go", ".rs"]);
+const SUPPORTED_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".vue", ".py", ".go", ".rs", ".md"]);
 
 // ---------------------------------------------------------------------------
 // sync_file

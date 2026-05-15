@@ -71,6 +71,12 @@ import {
   handleDelegateLocal, DelegateLocalSchema,
   handleLocalLlmStatus, LocalLlmStatusSchema,
 } from "./tools/delegate-local.js";
+import {
+  handleIngestBook, IngestBookSchema,
+  handleGenerateBookSkill, GenerateBookSkillSchema,
+  handleListBooks, ListBooksSchema,
+  runBookCli,
+} from "./tools/book.js";
 import { loadLocalConfig } from "./local-llm/config.js";
 
 // ---------------------------------------------------------------------------
@@ -97,6 +103,14 @@ if (_cliCmd === "session") {
 if (_cliCmd === "local") {
   const { runLocalLlmCli } = await import("./local-llm/setup-cli.js");
   const exitCode = await runLocalLlmCli(_cliArgs);
+  process.exit(exitCode);
+}
+
+if (_cliCmd === "book") {
+  const { initDatabase, prepareStatements } = await import("./database.js");
+  const bookDb = initDatabase();
+  const bookStmts = prepareStatements(bookDb);
+  const exitCode = await runBookCli(_cliArgs, bookStmts);
   process.exit(exitCode);
 }
 
@@ -185,12 +199,13 @@ async function guardPreEdit(
         toolName = payload.tool_name ?? "Write";
         const ti = payload.tool_input ?? {};
         path = ti.file_path ?? ti.path;
-        if (typeof ti.content === "string") content = ti.content;
-        else if (Array.isArray(ti.edits)) {
-          // MultiEdit — sum up final state crudely: use new_strings concatenated.
-          content = ti.edits.map((e) => e.new_string ?? "").join("\n");
-        } else if (typeof ti.new_string === "string") {
-          content = ti.new_string;
+        // Only `Write` carries the full new file content. `Edit`/`MultiEdit`
+        // carry replacement fragments, not the full post-write state — assessing
+        // shrinkage on those produces false MAJOR_SHRINK blocks on every edit
+        // of a non-tiny file. Leave content=null so assessTruncate skips the
+        // size-based rules and only the cascade lock can apply.
+        if (toolName === "Write" && typeof ti.content === "string") {
+          content = ti.content;
         }
       } catch {
         // Non-JSON stdin — ignore, fall through to "no path" error.
@@ -822,6 +837,35 @@ server.registerTool("plan_update_task", {
     "Statuses: pending → in_progress → done (or blocked).",
   inputSchema: PlanUpdateTaskSchema.shape,
 }, tx("plan_update_task", (args) => handlePlanUpdateTask(stmts, args)));
+
+// ---------------------------------------------------------------------------
+// Tools — Book Ingestion (PDF/EPUB/DOCX → markdown chunks → skill router)
+// ---------------------------------------------------------------------------
+
+server.registerTool("ingest_book", {
+  title: "Ingest Book",
+  description:
+    "Convert a book (PDF, EPUB, DOCX, or Markdown) into chunked markdown files " +
+    "under ./books/<slug>/ and index every chunk into Lucid. Requires user-installed " +
+    "converter (pymupdf4llm for PDF, pandoc for EPUB/DOCX). Pair with generate_book_skill " +
+    "to make the corpus auto-load as a Claude Code skill.",
+  inputSchema: IngestBookSchema.shape,
+}, tx("ingest_book", (args) => handleIngestBook(stmts, args)));
+
+server.registerTool("generate_book_skill", {
+  title: "Generate Book Skill",
+  description:
+    "Emit a thin SKILL.md router into ~/.claude/skills/book-<slug>/ (or .claude/skills/ " +
+    "for project scope). The skill auto-loads (~100 tokens) when its trigger topics come up " +
+    "and delegates retrieval to smart_context. Run after ingest_book.",
+  inputSchema: GenerateBookSkillSchema.shape,
+}, tx("generate_book_skill", (args) => handleGenerateBookSkill(args)));
+
+server.registerTool("list_books", {
+  title: "List Books",
+  description: "List ingested books under ./books/ with chunk counts and ingestion dates.",
+  inputSchema: ListBooksSchema.shape,
+}, tx("list_books", (args) => handleListBooks(args)));
 
 // ---------------------------------------------------------------------------
 // Tools — Updater

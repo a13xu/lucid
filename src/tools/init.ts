@@ -79,7 +79,7 @@ const LUCID_PRE_EDIT_HOOK: HookEntry = {
   hooks: [
     {
       type: "command",
-      command: `lucid guard pre-edit 2>&1 # ${LUCID_GUARD_MARKER}`,
+      command: `lucid guard pre-edit # ${LUCID_GUARD_MARKER}`,
     },
   ],
 };

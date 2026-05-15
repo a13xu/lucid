@@ -54,7 +54,7 @@ Default DB path: `~/.claude/memory.db`
 7. "What do we know?"  → recall("query")               → knowledge graph search
 ```
 
-## Tools (37)
+## Tools (40)
 
 ### Memory
 | Tool | Description |
@@ -110,6 +110,27 @@ Default DB path: `~/.claude/memory.db`
 |---|---|
 | `coding_rules` | Get the 25 Golden Rules checklist — naming, single responsibility, file/function size, error handling, frontend component rules, architecture separation. |
 | `check_code_quality` | Analyze a file or snippet against the 25 Golden Rules. Detects file/function bloat, vague naming, deep nesting, dead code, and for React/Vue files: prop explosion, inline styles, fetch-in-component, direct DOM access. Complements `validate_file`. |
+
+### Book Ingestion → Auto-Skill
+| Tool | Description |
+|---|---|
+| `ingest_book` | Convert a book (PDF, EPUB, DOCX, or Markdown) into chunked markdown under `./books/<slug>/` and index every chunk into Lucid. Chunkers: `heading` (default, splits on H1 with H2 fallback over 80KB), `page` (uses pymupdf4llm page markers), `none`. Requires user-installed converter: `pip install pymupdf4llm` for PDFs (fastest, native-text) or `marker-pdf` (OCR/scans); `pandoc` for EPUB/DOCX. |
+| `generate_book_skill` | Emit a thin `SKILL.md` router (~100 tokens) into `~/.claude/skills/book-<slug>/` (or `.claude/skills/` with `scope=project`). The skill auto-loads when its trigger topics come up and delegates retrieval to `smart_context` — so the corpus is pulled on demand, never inlined into every prompt. |
+| `list_books` | List ingested books under `./books/` with chunk counts and ingestion dates (reads each `_manifest.json`). |
+
+#### CLI (mirrors the MCP tools)
+
+```bash
+lucid book ingest ./clean-code.pdf --title "Clean Code"
+lucid book skill clean-code --topics "naming,refactor,functions,code review"
+lucid book list
+
+# Per-subcommand help
+lucid book ingest --help
+lucid book skill  --help
+```
+
+Pipeline: source file → conversion (shelled-out tool) → chunked markdown + `_manifest.json` → indexed via the standard `sync_file` pipeline (`.md` is now a supported extension) → optional `SKILL.md` router that triggers `smart_context` retrieval on relevant queries. Adding more books does not bloat Claude Code's startup — each skill costs ~100 tokens at scan time and bodies load only when relevant.
 
 ### Web Dev Skills
 | Tool | Description |
@@ -367,7 +388,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},
   | npx @a13xu/lucid
 ```
 
-In Claude Code: run `/mcp` — you should see `lucid` with 37 tools.
+In Claude Code: run `/mcp` — you should see `lucid` with 40 tools.
 
 ## Contributing
 
