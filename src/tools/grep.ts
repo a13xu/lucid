@@ -34,7 +34,7 @@ export function handleGrepCode(stmts: Statements, input: GrepCodeInput): string 
 
     let source: string;
     try {
-      source = decompress(file.content as Buffer);
+      source = decompress(file.content as Buffer, file.content_hash);
     } catch {
       continue; // skip fișiere corupte
     }

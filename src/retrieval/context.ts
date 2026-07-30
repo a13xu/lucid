@@ -159,7 +159,7 @@ export async function assembleContext(
     filepath: r.filepath,
     language: r.language,
     indexedAt: r.indexed_at ?? 0,
-    text: decompress(r.content),
+    text: decompress(r.content, r.content_hash),
   }));
 
   // ---------------------------------------------------------------------------

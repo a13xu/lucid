@@ -128,7 +128,7 @@ export function handleGetRecent(
       // New file — show first ~20 lines
       const row = stmts.getFileByPath.get(f.filepath);
       if (row) {
-        const src = decompress(row.content).split("\n").slice(0, 20).join("\n");
+        const src = decompress(row.content, row.content_hash).split("\n").slice(0, 20).join("\n");
         lines.push(src);
         if (row.original_size > src.length) lines.push("… [new file, showing first 20 lines]");
       }

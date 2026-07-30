@@ -438,6 +438,7 @@ if (_qdrantUrl) { try { allowHost(_qdrantUrl); } catch { /* ignore */ } }
 const _embeddingUrl = process.env["EMBEDDING_URL"] ?? _appCfg.qdrant?.embeddingUrl;
 if (_embeddingUrl) { try { allowHost(_embeddingUrl); } catch { /* ignore */ } }
 else { allowHost("https://api.openai.com"); }
+allowHost("https://registry.npmjs.org");
 
 // Local-LLM endpoint (may be remote — user-opted-in via `lucid local init`)
 const _localCfg = loadLocalConfig();

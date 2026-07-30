@@ -151,6 +151,7 @@ function createSchema(db: Database.Database): void {
       use_count     INTEGER NOT NULL DEFAULT 0,
       last_rewarded INTEGER
     );
+    CREATE INDEX IF NOT EXISTS idx_fr_reward ON file_rewards(total_reward DESC);
 
     -- Planning tables
     CREATE TABLE IF NOT EXISTS plans (
@@ -359,6 +360,7 @@ export interface Statements {
   // file_rewards
   upsertFileReward:       WriteStmt<[string, number]>;                   // filepath, delta_reward
   getFileRewards:         Stmt<[], FileRewardRow>;
+  getPositiveFileRewards: Stmt<[], FileRewardRow>;
   getTopFileRewards:      Stmt<[number], FileRewardRow>;
   // plans
   insertPlan:             WriteStmt<[string, string, string]>;            // title, description, user_story
@@ -555,6 +557,10 @@ export function prepareStatements(db: Database.Database): Statements {
 
     getFileRewards: db.prepare<[], FileRewardRow>(
       "SELECT * FROM file_rewards"
+    ),
+
+    getPositiveFileRewards: db.prepare<[], FileRewardRow>(
+      "SELECT * FROM file_rewards WHERE total_reward > 0"
     ),
 
     getTopFileRewards: db.prepare<[number], FileRewardRow>(

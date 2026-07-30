@@ -77,6 +77,7 @@ export function rewardExperience(
   for (const fp of fps) {
     stmts.upsertFileReward.run(fp, delta);
   }
+  invalidateRewardsCache();
 
   return { query: exp.query, fps };
 }
@@ -102,19 +103,36 @@ export function implicitRewardFromSync(
 
   stmts.updateExperienceReward.run(IMPLICIT_DELTA, null, lastId);
   stmts.upsertFileReward.run(filepath, IMPLICIT_DELTA);
+  invalidateRewardsCache();
   return true;
 }
 
 // ---------------------------------------------------------------------------
 // Get file rewards map — for ranking boost in assembleContext()
+// Memoized 30s (decay half-life is 14 days, so staleness is negligible);
+// invalidated by any reward write above.
 // ---------------------------------------------------------------------------
 
+const REWARDS_CACHE_TTL_MS = 30_000;
+let _rewardsCache: Map<string, number> | null = null;
+let _rewardsCacheAt = 0;
+
+export function invalidateRewardsCache(): void {
+  _rewardsCache = null;
+}
+
 export function getFileRewardsMap(stmts: Statements): Map<string, number> {
-  const rows = stmts.getFileRewards.all() as FileRewardRow[];
+  const now = Date.now();
+  if (_rewardsCache && now - _rewardsCacheAt < REWARDS_CACHE_TTL_MS) {
+    return _rewardsCache;
+  }
+  const rows = stmts.getPositiveFileRewards.all() as FileRewardRow[];
   const map = new Map<string, number>();
   for (const row of rows) {
     const d = decayedReward(row.total_reward, row.last_rewarded);
     if (d > 0) map.set(row.filepath, d);
   }
+  _rewardsCache = map;
+  _rewardsCacheAt = now;
   return map;
 }

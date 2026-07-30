@@ -3,6 +3,7 @@ import { join } from "path";
 import { readFileSync, existsSync } from "fs";
 import { fileURLToPath } from "url";
 import { execSync } from "child_process";
+import { safeFetch } from "../security/ssrf.js";
 
 // ---------------------------------------------------------------------------
 // Package root resolution
@@ -28,9 +29,10 @@ export function getCurrentVersion(): string {
 
 async function fetchLatestVersion(): Promise<string | null> {
   try {
-    const res = await fetch(
+    const res = await safeFetch(
       "https://registry.npmjs.org/@a13xu/lucid/latest",
-      { signal: AbortSignal.timeout(5000) },
+      {},
+      5000,
     );
     if (!res.ok) return null;
     const data = (await res.json()) as { version?: string };
