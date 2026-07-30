@@ -16,6 +16,15 @@ export interface LucidConfig {
   /** Security guard configuration */
   security?: SecurityConfig;
   /**
+   * Dynamic toolsets: domains listed here start disabled (hidden from tools/list)
+   * and can be enabled per-session via the lucid_toolsets tool.
+   * Default: ["webdev", "book", "local"]. Use [] to expose every tool at boot.
+   * Env override: LUCID_TOOLSETS_DISABLED="webdev,book" or "none".
+   */
+  toolsets?: {
+    disabled?: string[];
+  };
+  /**
    * Semantic compression via LLMLingua-2 (microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank).
    * When enabled, file content is compressed before being returned to Claude and before Qdrant embedding.
    * Model is downloaded on first use (~700MB) and cached in ~/.lucid/models/.
