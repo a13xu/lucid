@@ -8,6 +8,7 @@ import { allowHost } from "./security/ssrf.js";
 import { loadConfig } from "./config.js";
 import { checkForUpdatesOnStartup, getCurrentVersion } from "./tools/updater.js";
 import { backfillFileFts } from "./indexer/fts-backfill.js";
+import { initTreeSitter } from "./indexer/tree-sitter.js";
 import { loadLocalConfig } from "./local-llm/config.js";
 import { maybeRunCli } from "./cli.js";
 
@@ -58,6 +59,9 @@ if (localCfg?.enabled) {
 
 // FTS5 backfill for DBs indexed before file_text_fts existed (chunked, non-blocking)
 backfillFileFts(stmts);
+
+// tree-sitter skeletons — fire-and-forget; regex fallback until (unless) ready
+void initTreeSitter();
 
 // ---------------------------------------------------------------------------
 // MCP Server (high-level McpServer API, SDK 1.27+)

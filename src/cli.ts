@@ -25,6 +25,15 @@ export async function maybeRunCli(argv: string[]): Promise<number | null> {
     const bookStmts = prepareStatements(bookDb);
     return await runBookCli(args, bookStmts);
   }
+  if (cmd === "setup") {
+    if (args[0] === "grammars") {
+      const { setupGrammars } = await import("./indexer/grammars.js");
+      return await setupGrammars();
+    }
+    process.stderr.write(`Usage: lucid setup <grammars>\n`);
+    return 64;
+  }
+
   return null;
 }
 

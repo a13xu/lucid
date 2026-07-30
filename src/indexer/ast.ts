@@ -1,6 +1,9 @@
-// Structural skeleton extraction — regex-based AST-like parsing
+// Structural skeleton extraction — tree-sitter (when grammars are installed
+// via `lucid setup grammars`) with a regex-based fallback.
 // Returns only signatures, imports, and TODO comments (no function bodies)
 // Used by get_context when a file exceeds the per-file token budget
+
+import { treeSitterSkeleton } from "./tree-sitter.js";
 
 export interface Skeleton {
   imports: string[];
@@ -186,6 +189,12 @@ function skeletonGeneric(source: string): Skeleton {
 // ---------------------------------------------------------------------------
 
 export function extractSkeleton(source: string, language: string): Skeleton {
+  // tree-sitter path (exact AST) when the WASM runtime + grammar are loaded;
+  // returns null before init / when unavailable → regex fallback below.
+  if (language === "typescript" || language === "javascript" || language === "python") {
+    const ts = treeSitterSkeleton(source, language);
+    if (ts) return ts;
+  }
   switch (language) {
     case "typescript":
     case "javascript":

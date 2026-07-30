@@ -23,6 +23,10 @@ npm install -g @a13xu/lucid && lucid
 
 # Run via npx
 npx -y @a13xu/lucid
+
+# One-time: download tree-sitter grammar WASMs (~3.4MB) into ~/.lucid/grammars/
+# → exact AST skeletons for TS/JS/Python; without them a regex fallback is used
+lucid setup grammars
 ```
 
 TypeScript strict mode (`strict: true`) is the linter. Validate with Logic Guardian (`validate_file`, `check_drift`) after changes.
@@ -51,7 +55,7 @@ Claude Code → StdioServerTransport → guardRequest() [rate limit + WAF + SSRF
 |--------|---------|
 | `src/database.ts` | Schema + all prepared statements |
 | `src/tools/init.ts` | `init_project` — scans CLAUDE.md, package.json, source files, installs PostToolUse hook |
-| `src/indexer/` | `file.ts` extracts exports/TODOs; `ast.ts` builds skeletons (signatures only, no bodies); `project.ts` recursive scan |
+| `src/indexer/` | `file.ts` extracts exports/TODOs; `ast.ts` builds skeletons (signatures only, no bodies) — tree-sitter (`tree-sitter.ts` + `grammars.ts`, optional WASM) with regex fallback; `project.ts` recursive scan with mtime+size incremental shortcut |
 | `src/retrieval/context.ts` | `get_context` — TF-IDF ranking + recency boost + skeleton pruning to stay within token budget |
 | `src/retrieval/tfidf.ts` | TF-IDF computed on-the-fly across all indexed files |
 | `src/guardian/validator.ts` | Regex-based drift detection (Python/JS/TS patterns) |
