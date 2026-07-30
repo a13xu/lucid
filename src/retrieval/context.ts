@@ -1,8 +1,10 @@
-// Smart context assembly — TF-IDF + recency boost + AST skeleton pruning
-// Falls back gracefully: Qdrant → TF-IDF → recency-only
+// Smart context assembly — BM25 candidate-set + RRF fusion (BM25/Qdrant/TF-IDF)
+// + recency/reward priors + AST skeleton pruning.
+// Falls back gracefully: hybrid → TF-IDF full scan (empty FTS) → recency-only
 
 import { decompress } from "../store/content.js";
 import { rankByRelevance } from "./tfidf.js";
+import { fuseRanks, toFtsQuery } from "./fuse.js";
 import { extractSkeleton, renderSkeleton } from "../indexer/ast.js";
 import { searchQdrant } from "./qdrant.js";
 import type { Statements, FileContentRow } from "../database.js";
@@ -93,7 +95,7 @@ export interface ContextFile {
 export interface ContextResult {
   files: ContextFile[];
   totalTokens: number;
-  strategy: "qdrant" | "tfidf" | "recent";
+  strategy: "qdrant" | "tfidf" | "recent" | "hybrid";
   truncated: boolean;
   skippedFiles: number;
 }
@@ -123,86 +125,112 @@ export async function assembleContext(
   const recentHours = opts.recentHours ?? cfg.recentWindowHours;
   const topK = opts.topK ?? 10;
 
-  // Fetch all indexed files (filepath, content blob, language, indexed_at)
   type FileRow = Pick<FileContentRow, "filepath" | "content" | "language" | "content_hash" | "indexed_at">;
-  const allRows = stmts.getAllFiles.all() as FileRow[];
 
-  if (!Array.isArray(allRows) || allRows.length === 0) {
-    return { files: [], totalTokens: 0, strategy: "tfidf", truncated: false, skippedFiles: 0 };
+  const nowSec = Math.floor(Date.now() / 1000);
+  const cutoffSec = nowSec - recentHours * 3600;
+
+  // Experience-based rewards (memoized 30s) — used both as candidate source and prior
+  const fileRewards = getFileRewardsMap(stmts);
+
+  // ---------------------------------------------------------------------------
+  // Candidate selection: BM25 top-N ∪ recent window ∪ rewarded paths.
+  // Full scan only when the FTS index is empty (pre-backfill DB) or the query
+  // has no indexable terms — then TF-IDF over everything, as before.
+  // ---------------------------------------------------------------------------
+
+  const BM25_CANDIDATES = 120;
+  const ftsQuery = toFtsQuery(query);
+  let bm25Order: string[] = [];
+  let rows: FileRow[];
+  let usedCandidateSet = false;
+
+  const fetchByPaths = (paths: string[]): FileRow[] =>
+    paths.length > 0 ? (stmts.getFilesByPaths.all(JSON.stringify(paths)) as FileRow[]) : [];
+
+  if (opts.recentOnly) {
+    rows = fetchByPaths(stmts.getRecentFiles.all(cutoffSec).map((r) => r.filepath));
+  } else {
+    let ftsPopulated = false;
+    if (ftsQuery) {
+      try {
+        bm25Order = stmts.searchFileFtsBM25.all(ftsQuery, BM25_CANDIDATES).map((r) => r.filepath);
+        ftsPopulated = bm25Order.length > 0 || (stmts.countFileFts.get()?.c ?? 0) > 0;
+      } catch { /* malformed MATCH — fall through to full scan */ }
+    }
+    if (ftsPopulated) {
+      const candidatePaths = new Set<string>(bm25Order);
+      for (const r of stmts.getRecentFiles.all(cutoffSec)) candidatePaths.add(r.filepath);
+      for (const fp of fileRewards.keys()) candidatePaths.add(fp);
+      rows = fetchByPaths([...candidatePaths]);
+      usedCandidateSet = true;
+    } else {
+      rows = stmts.getAllFiles.all() as FileRow[];
+    }
+  }
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { files: [], totalTokens: 0, strategy: opts.recentOnly ? "recent" : "tfidf", truncated: false, skippedFiles: 0 };
   }
 
   // Apply whitelist dirs filter
   const dirs = opts.dirs ?? cfg.whitelistDirs;
-  const filtered = dirs && dirs.length > 0
-    ? allRows.filter((r) => dirs.some((d) => r.filepath.replace(/\\/g, "/").includes(d)))
-    : allRows;
-
-  // Recency cutoff
-  const nowSec = Math.floor(Date.now() / 1000);
-  const cutoffSec = nowSec - recentHours * 3600;
+  const candidates = dirs && dirs.length > 0
+    ? rows.filter((r) => dirs.some((d) => r.filepath.replace(/\\/g, "/").includes(d)))
+    : rows;
 
   const recentSet = new Set(
-    filtered.filter((r) => (r.indexed_at ?? 0) >= cutoffSec).map((r) => r.filepath)
+    candidates.filter((r) => (r.indexed_at ?? 0) >= cutoffSec).map((r) => r.filepath)
   );
 
-  // If recentOnly, skip files outside the window
-  const candidates = opts.recentOnly
-    ? filtered.filter((r) => recentSet.has(r.filepath))
-    : filtered;
-
   if (candidates.length === 0) {
-    return { files: [], totalTokens: 0, strategy: opts.recentOnly ? "recent" : "tfidf", truncated: false, skippedFiles: filtered.length };
+    return { files: [], totalTokens: 0, strategy: opts.recentOnly ? "recent" : "tfidf", truncated: false, skippedFiles: rows.length };
   }
 
-  // Decompress all candidates
+  // Decompress candidates (bounded by candidate-set size; LRU-cached by hash)
   const decompressed = candidates.map((r) => ({
     filepath: r.filepath,
     language: r.language,
     indexedAt: r.indexed_at ?? 0,
+    hash: r.content_hash,
     text: decompress(r.content, r.content_hash),
   }));
 
   // ---------------------------------------------------------------------------
-  // Ranking strategy
+  // Ranking: RRF fusion of BM25 + Qdrant + TF-IDF, with recency/reward priors
   // ---------------------------------------------------------------------------
 
-  let strategy: ContextResult["strategy"] = "tfidf";
-  let ranked: typeof decompressed;
+  let strategy: ContextResult["strategy"] = opts.recentOnly ? "recent" : usedCandidateSet ? "hybrid" : "tfidf";
 
-  // Load experience-based rewards for ranking boost (decayed, normalized to +0.25 max)
-  const fileRewards = getFileRewardsMap(stmts);
+  const tfidfOrder = rankByRelevance(query, decompressed)
+    .filter((s) => s.score > 0)
+    .map((s) => s.filepath);
 
+  let qdrantOrder: string[] = [];
   const qdrantCfg = getQdrantConfig(cfg);
-
   if (qdrantCfg && !opts.recentOnly) {
-    // Try Qdrant first
     try {
       const chunks = await searchQdrant(query, topK * 3, qdrantCfg);
-      if (chunks.length > 0) {
-        strategy = "qdrant";
-        // Deduplicate by filepath, preserve order
-        const seen = new Set<string>();
-        const qdrantOrder: string[] = [];
-        for (const c of chunks) {
-          if (!seen.has(c.filepath)) { seen.add(c.filepath); qdrantOrder.push(c.filepath); }
-        }
-        // Place Qdrant matches first, then remaining by TF-IDF + reward boost
-        const tfidfRanked = rankByRelevance(query, decompressed);
-        const tfidfOrder = tfidfRanked.map((s) => s.filepath).filter((fp) => !seen.has(fp));
-        const orderedFps = [...qdrantOrder, ...tfidfOrder];
-        const fpToDoc = new Map(decompressed.map((d) => [d.filepath, d]));
-        ranked = orderedFps.map((fp) => fpToDoc.get(fp)!).filter(Boolean);
-      } else {
-        ranked = rankAndBoost(query, decompressed, recentSet, fileRewards);
+      const seen = new Set<string>();
+      for (const c of chunks) {
+        if (!seen.has(c.filepath)) { seen.add(c.filepath); qdrantOrder.push(c.filepath); }
       }
-    } catch {
-      // Qdrant unreachable — fall back to TF-IDF
-      ranked = rankAndBoost(query, decompressed, recentSet, fileRewards);
-    }
-  } else {
-    ranked = rankAndBoost(query, decompressed, recentSet, fileRewards);
-    if (opts.recentOnly) strategy = "recent";
+      if (qdrantOrder.length > 0) strategy = "qdrant";
+    } catch { /* Qdrant unreachable — remaining retrievers still vote */ }
   }
+
+  const maxReward = fileRewards.size > 0 ? Math.max(...fileRewards.values()) : 0;
+  const priors = new Map<string, number>();
+  for (const d of decompressed) {
+    let p = recentSet.has(d.filepath) ? 0.5 : 0;
+    if (maxReward > 0) p += ((fileRewards.get(d.filepath) ?? 0) / maxReward) * 0.5;
+    if (p > 0) priors.set(d.filepath, p);
+  }
+
+  const scores = fuseRanks([bm25Order, qdrantOrder, tfidfOrder], priors);
+  const ranked = [...decompressed].sort(
+    (a, b) => (scores.get(b.filepath) ?? 0) - (scores.get(a.filepath) ?? 0)
+  );
 
   // ---------------------------------------------------------------------------
   // Assemble context with token budget
@@ -266,29 +294,3 @@ export async function assembleContext(
   return { files: result, totalTokens, strategy, truncated, skippedFiles };
 }
 
-// ---------------------------------------------------------------------------
-// TF-IDF + recency boost ranking
-// ---------------------------------------------------------------------------
-
-function rankAndBoost<T extends { filepath: string; text: string; indexedAt: number }>(
-  query: string,
-  docs: T[],
-  recentSet: Set<string>,
-  fileRewards?: Map<string, number>
-): T[] {
-  const scored = rankByRelevance(query, docs);
-  const scoreMap = new Map(scored.map((s) => [s.filepath, s.score]));
-
-  // Compute normalizer for experience boost (max 0.25, avoids dominating TF-IDF)
-  const maxReward = fileRewards && fileRewards.size > 0
-    ? Math.max(...fileRewards.values())
-    : 0;
-
-  return [...docs].sort((a, b) => {
-    const rewardBoostA = maxReward > 0 ? ((fileRewards!.get(a.filepath) ?? 0) / maxReward) * 0.25 : 0;
-    const rewardBoostB = maxReward > 0 ? ((fileRewards!.get(b.filepath) ?? 0) / maxReward) * 0.25 : 0;
-    const sA = (scoreMap.get(a.filepath) ?? 0) + (recentSet.has(a.filepath) ? 0.3 : 0) + rewardBoostA;
-    const sB = (scoreMap.get(b.filepath) ?? 0) + (recentSet.has(b.filepath) ? 0.3 : 0) + rewardBoostB;
-    return sB - sA;
-  });
-}

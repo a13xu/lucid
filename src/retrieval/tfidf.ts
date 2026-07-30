@@ -28,13 +28,57 @@ export interface ScoredFile {
   matchedTerms: string[];
 }
 
+// ---------------------------------------------------------------------------
+// Per-document term stats, memoized by content_hash (self-invalidating:
+// changed content → new hash). Tokenization dominates ranking cost.
+// ---------------------------------------------------------------------------
+
+interface DocStats {
+  tf: Map<string, number>;
+  totalTokens: number;
+}
+
+const TF_CACHE_MAX_DOCS = 2000;
+const tfCache = new Map<string, DocStats>();
+
+function computeDocStats(text: string): DocStats {
+  const tokens = tokenize(text);
+  const tf = new Map<string, number>();
+  for (const t of tokens) tf.set(t, (tf.get(t) ?? 0) + 1);
+  return { tf, totalTokens: Math.max(tokens.length, 1) };
+}
+
+function getDocStats(text: string, hash?: string): DocStats {
+  if (hash !== undefined) {
+    const hit = tfCache.get(hash);
+    if (hit !== undefined) {
+      tfCache.delete(hash);
+      tfCache.set(hash, hit);
+      return hit;
+    }
+  }
+  const stats = computeDocStats(text);
+  if (hash !== undefined) {
+    tfCache.set(hash, stats);
+    while (tfCache.size > TF_CACHE_MAX_DOCS) {
+      tfCache.delete(tfCache.keys().next().value as string);
+    }
+  }
+  return stats;
+}
+
+export function invalidateTfidfCache(): void {
+  tfCache.clear();
+}
+
 /**
  * Rank files by TF-IDF relevance to a query.
  * Returns all files sorted by score descending (score=0 files included at bottom).
+ * Pass `hash` (content hash) per file to reuse memoized term stats across queries.
  */
 export function rankByRelevance(
   query: string,
-  files: Array<{ filepath: string; text: string }>
+  files: Array<{ filepath: string; text: string; hash?: string }>
 ): ScoredFile[] {
   if (files.length === 0) return [];
 
@@ -45,23 +89,18 @@ export function rankByRelevance(
 
   const N = files.length;
 
-  // Compute per-doc term frequencies + document frequencies
-  const df = new Map<string, number>();
-  const docTF: Map<string, number>[] = [];
+  const docStats = files.map((f) => getDocStats(f.text, f.hash));
 
-  for (const file of files) {
-    const tokens = tokenize(file.text);
-    const tf = new Map<string, number>();
-    for (const t of tokens) tf.set(t, (tf.get(t) ?? 0) + 1);
-    docTF.push(tf);
-    for (const term of tf.keys()) df.set(term, (df.get(term) ?? 0) + 1);
+  // Document frequencies over this file set
+  const df = new Map<string, number>();
+  for (const stats of docStats) {
+    for (const term of stats.tf.keys()) df.set(term, (df.get(term) ?? 0) + 1);
   }
 
   const results: ScoredFile[] = [];
 
   for (let i = 0; i < files.length; i++) {
-    const tf = docTF[i]!;
-    const totalTokens = Math.max([...tf.values()].reduce((a, b) => a + b, 0), 1);
+    const { tf, totalTokens } = docStats[i]!;
     let score = 0;
     const matched: string[] = [];
 

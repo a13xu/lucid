@@ -173,6 +173,10 @@ export function upsertFileIndex(
     index.language
   );
 
+  // BM25 full-text index (delete + insert = upsert; FTS5 has no ON CONFLICT)
+  stmts.deleteFileFts.run(index.module);
+  stmts.insertFileFts.run(index.module, source);
+
   // Index structural în entities (compact, pentru recall)
   const observations: string[] = [];
   if (index.description) observations.push(`description: ${index.description}`);

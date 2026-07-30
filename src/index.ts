@@ -67,6 +67,7 @@ import {
   handleCheckTruncateRisk, CheckTruncateRiskSchema,
 } from "./tools/backup.js";
 import { handleSessionStatus, SessionStatusSchema } from "./tools/session.js";
+import { backfillFileFts } from "./indexer/fts-backfill.js";
 import {
   handleDelegateLocal, DelegateLocalSchema,
   handleLocalLlmStatus, LocalLlmStatusSchema,
@@ -445,6 +446,9 @@ const _localCfg = loadLocalConfig();
 if (_localCfg?.enabled) {
   try { allowHost(_localCfg.endpoint); } catch { /* ignore */ }
 }
+
+// FTS5 backfill for DBs indexed before file_text_fts existed (chunked, non-blocking)
+backfillFileFts(stmts);
 
 // ---------------------------------------------------------------------------
 // MCP Server (high-level McpServer API, SDK 1.27+)

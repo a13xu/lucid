@@ -162,9 +162,26 @@ const INJECTION_PATTERNS: Array<{ re: RegExp; rule: string; severity: Severity }
   { re: /\$\([^)]+\)|`[^`]+`/,                     rule: "SHELL_SUBSTITUTION", severity: "high"    },
 ];
 
+/**
+ * Canonical form used ONLY for pattern inspection (the original value is what
+ * gets processed): NFKC folds fullwidth/compatibility chars, zero-width and
+ * control chars are stripped, and one percent-decode pass surfaces %27-style
+ * encoding. Patterns run against both original and canonical text.
+ */
+export function canonicalizeForInspection(value: string): string {
+  let out = value.normalize("NFKC");
+  out = out.replace(/[\u200B-\u200D\u2060\uFEFF]/g, "");
+  out = out.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
+  if (out.includes("%")) {
+    try { out = decodeURIComponent(out); } catch { /* not valid percent-encoding — keep as-is */ }
+  }
+  return out;
+}
+
 export function checkInjectionPatterns(value: string): WafResult {
+  const canonical = canonicalizeForInspection(value);
   for (const { re, rule, severity } of INJECTION_PATTERNS) {
-    if (re.test(value)) {
+    if (re.test(value) || (canonical !== value && re.test(canonical))) {
       return block(rule, severity, `Injection pattern detected (rule: ${rule})`);
     }
   }

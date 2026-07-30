@@ -102,6 +102,19 @@ function createSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_fc_hash     ON file_contents(content_hash);
     CREATE INDEX IF NOT EXISTS idx_fc_indexed  ON file_contents(indexed_at);
 
+    -- BM25 full-text index over decompressed file bodies. Standalone (not
+    -- external-content) because file_contents.content is a compressed BLOB;
+    -- populated from upsertFileIndex, deletes cascade via trigger.
+    CREATE VIRTUAL TABLE IF NOT EXISTS file_text_fts USING fts5(
+      filepath UNINDEXED,
+      body,
+      tokenize="unicode61 remove_diacritics 2 tokenchars '_$'"
+    );
+
+    CREATE TRIGGER IF NOT EXISTS file_contents_fts_ad AFTER DELETE ON file_contents BEGIN
+      DELETE FROM file_text_fts WHERE filepath = old.filepath;
+    END;
+
     -- Diffs între versiuni consecutive (pentru get_recent)
     CREATE TABLE IF NOT EXISTS file_diffs (
       filepath    TEXT PRIMARY KEY,
@@ -331,6 +344,13 @@ export interface Statements {
   getAllFiles:       Stmt<[], Pick<FileContentRow, "filepath" | "content" | "language" | "content_hash" | "indexed_at">>;
   getRecentFiles:   Stmt<[number], Pick<FileContentRow, "filepath" | "language" | "indexed_at">>;
   deleteFile:       WriteStmt<[string]>;
+  // file_text_fts (BM25 over file bodies)
+  insertFileFts:      WriteStmt<[string, string]>;                       // filepath, body
+  deleteFileFts:      WriteStmt<[string]>;
+  searchFileFtsBM25:  Stmt<[string, number], { filepath: string }>;      // match query, limit
+  countFileFts:       Stmt<[], { c: number }>;
+  getFilesMissingFts: Stmt<[number], Pick<FileContentRow, "filepath" | "content" | "content_hash">>;
+  getFilesByPaths:    Stmt<[string], Pick<FileContentRow, "filepath" | "content" | "language" | "content_hash" | "indexed_at">>; // JSON array of paths
   fileStorageStats: Stmt<[], { count: number; total_original: number; total_compressed: number }>;
   // file_diffs
   upsertDiff:    WriteStmt<[string, string, string]>;
@@ -424,6 +444,37 @@ export function prepareStatements(db: Database.Database): Statements {
 
     deleteFile: db.prepare<[string], unknown>(
       "DELETE FROM file_contents WHERE filepath = ?"
+    ),
+
+    // file_text_fts
+    insertFileFts: db.prepare<[string, string], unknown>(
+      "INSERT INTO file_text_fts (filepath, body) VALUES (?, ?)"
+    ),
+
+    deleteFileFts: db.prepare<[string], unknown>(
+      "DELETE FROM file_text_fts WHERE filepath = ?"
+    ),
+
+    searchFileFtsBM25: db.prepare<[string, number], { filepath: string }>(
+      `SELECT filepath FROM file_text_fts
+       WHERE file_text_fts MATCH ?
+       ORDER BY bm25(file_text_fts, 0, 1)
+       LIMIT ?`
+    ),
+
+    countFileFts: db.prepare<[], { c: number }>(
+      "SELECT count(*) AS c FROM file_text_fts"
+    ),
+
+    getFilesMissingFts: db.prepare<[number], Pick<FileContentRow, "filepath" | "content" | "content_hash">>(
+      `SELECT filepath, content, content_hash FROM file_contents
+       WHERE filepath NOT IN (SELECT filepath FROM file_text_fts)
+       LIMIT ?`
+    ),
+
+    getFilesByPaths: db.prepare<[string], Pick<FileContentRow, "filepath" | "content" | "language" | "content_hash" | "indexed_at">>(
+      `SELECT filepath, content, language, content_hash, indexed_at FROM file_contents
+       WHERE filepath IN (SELECT value FROM json_each(?))`
     ),
 
     upsertDiff: db.prepare<[string, string, string], unknown>(

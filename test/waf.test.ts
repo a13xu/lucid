@@ -26,13 +26,21 @@ describe("checkInjectionPatterns", () => {
     expect(checkInjectionPatterns("src/retrieval/context.ts").blocked).toBe(false);
   });
 
-  // Known gaps (Phase 2 backlog: NFKC normalization + percent-decoding before matching)
-  it.fails("blocks fullwidth-unicode tautology (KNOWN GAP)", () => {
+  // Canonicalization (NFKC + percent-decode + zero-width strip) closes these
+  it("blocks fullwidth-unicode tautology", () => {
     expect(checkInjectionPatterns("＇ OR ＇1＇=＇1").blocked).toBe(true);
   });
 
-  it.fails("blocks percent-encoded tautology (KNOWN GAP)", () => {
+  it("blocks percent-encoded tautology", () => {
     expect(checkInjectionPatterns("%27%20OR%20%271%27%3D%271").blocked).toBe(true);
+  });
+
+  it("blocks zero-width-obfuscated UNION SELECT", () => {
+    expect(checkInjectionPatterns("UNION​ SELECT password").blocked).toBe(true);
+  });
+
+  it("still passes benign percent signs", () => {
+    expect(checkInjectionPatterns("progress is 50% done").blocked).toBe(false);
   });
 });
 
