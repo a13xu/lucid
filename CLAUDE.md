@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Lucid** is an MCP (Model Context Protocol) server (`@a13xu/lucid`) that gives Claude Code persistent memory, intelligent code indexing, context retrieval, and LLM drift detection via 20 MCP tools.
+**Lucid** is an MCP (Model Context Protocol) server (`@a13xu/lucid`) that gives Claude Code persistent memory, intelligent code indexing, context retrieval, and LLM drift detection via ~45 MCP tools grouped into dynamic toolsets.
 
 ## Commands
 
@@ -12,9 +12,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Build TypeScript → build/
 npm run build
 
-# Start Web UI (Express on port 3001)
-npm run web:install   # first time only
-npm run web
+# Run tests (vitest)
+npm test
 
 # Register with Claude Code (after build)
 claude mcp add --transport stdio lucid -- node /absolute/path/lucid/build/index.js
@@ -26,11 +25,13 @@ npm install -g @a13xu/lucid && lucid
 npx -y @a13xu/lucid
 ```
 
-No automated test suite. TypeScript strict mode (`strict: true`) is the linter. Validate with Logic Guardian (`validate_file`, `check_drift`) after changes.
+TypeScript strict mode (`strict: true`) is the linter. Validate with Logic Guardian (`validate_file`, `check_drift`) after changes.
 
 ## Architecture
 
-**Entry point:** `src/index.ts` — initializes SQLite, registers 20 tools, sets up `StdioServerTransport`, optionally auto-starts Web UI.
+**Entry point:** `src/index.ts` (~120 LOC) — CLI dispatch via `src/cli.ts` (`lucid watch|status|stop|guard|session|local|book`), then SQLite init, security guard, domain registration, `StdioServerTransport`.
+
+**Tool registration:** `src/registry/<domain>.ts` modules (memory, indexing, retrieval, reward, guardian, plan, ops, local, book, webdev), each exporting `register*(server, ctx)` → map of `RegisteredTool` handles. `registry/shared.ts` holds the `tx()` guard wrapper + `RegistryCtx`. Non-core domains (webdev, book, local) start **disabled** (dynamic toolsets, `registry/toolsets.ts`) — the `lucid_toolsets` tool enables them per-session; override via `toolsets.disabled` in config or `LUCID_TOOLSETS_DISABLED` env ("none" = all visible).
 
 **Request pipeline (every tool call):**
 ```
@@ -60,13 +61,13 @@ Claude Code → StdioServerTransport → guardRequest() [rate limit + WAF + SSRF
 | `src/tools/plan.ts` | Plan CRUD + task status transitions |
 | `src/memory/experience.ts` | Reward/penalize signals, decay (half-life ~14 days) |
 
-**Web UI** (`web/`): Separate Express app (port 3001). Uses its own better-sqlite3 instance. Routes: `/api/plans`, `/api/tasks`, `/api/tests`, `/api/orchestrator`, `/api/auto-tools`, `/api/worker`. Frontend SPA in `web/public/app.js`.
+**HTTP daemon** (`src/http/`): `lucid watch` starts a chokidar watcher + Express server on port 7821 (`/sync`, `/sync-project`, `/context`, `/validate`, `/health`) so hooks and shell scripts can sync without going through Claude. (`web/` contains remnants of a removed Express UI — not shipped, not runnable.)
 
 ## Key Patterns
 
 **Adding a new MCP tool:**
 1. Create handler in `src/tools/<name>.ts`
-2. Register in `src/index.ts`: add to `ListToolsRequestSchema` response + `CallToolRequestSchema` switch
+2. Register it in the matching `src/registry/<domain>.ts` module (wrap the handler with `tx()`); new domains also need an entry in the `domains` map in `src/index.ts`
 3. If it needs new DB tables, add schema + prepared statements in `src/database.ts`
 
 **Context retrieval strategy:**

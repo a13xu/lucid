@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { resolve, extname } from "path";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, statSync } from "fs";
 import type { Statements } from "../database.js";
 import { indexFile, upsertFileIndex } from "../indexer/file.js";
 import { indexProject, type IndexResult } from "../indexer/project.js";
@@ -21,7 +21,9 @@ export const SyncFileSchema = z.object({
 });
 
 export function handleSyncFile(stmts: Statements, args: z.infer<typeof SyncFileSchema>): string {
-  const filepath = resolve(args.path);
+  // Normalize to forward slashes — file_contents.filepath is stored normalized
+  // (see buildFileIndex), so DB lookups with raw Windows paths would miss.
+  const filepath = resolve(args.path).replace(/\\/g, "/");
 
   if (!existsSync(filepath)) return `File not found: ${filepath}`;
   if (!SUPPORTED_EXTS.has(extname(filepath).toLowerCase())) {
@@ -32,12 +34,14 @@ export function handleSyncFile(stmts: Statements, args: z.infer<typeof SyncFileS
   if (!index) return `Could not read file: ${filepath}`;
 
   const source = readFileSync(filepath, "utf-8");
+  let mtimeMs = 0;
+  try { mtimeMs = Math.floor(statSync(filepath).mtimeMs); } catch { /* keep 0 */ }
 
   // Capture previous content before upsert (for diff)
   const prevRow = stmts.getFileByPath.get(filepath);
   const prevSource = prevRow ? decompress(prevRow.content) : null;
 
-  const result = upsertFileIndex(index, source, stmts);
+  const result = upsertFileIndex(index, source, stmts, mtimeMs);
 
   if (!result.stored) {
     return `⏭️  Unchanged: ${filepath} (hash match — skipped)`;

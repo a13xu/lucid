@@ -152,13 +152,19 @@ export interface UpsertResult {
 export function upsertFileIndex(
   index: FileIndex,
   source: string,
-  stmts: Statements
+  stmts: Statements,
+  mtimeMs = 0
 ): UpsertResult {
   const fileHash = sha256(source);
 
-  // Change detection — skip everything se hash-ul e identic
-  const existing = stmts.getFileByPath.get(index.module);
+  // Change detection — skip everything se hash-ul e identic. Meta-only lookup
+  // (no BLOB load); refresh stored mtime so the mtime+size shortcut in
+  // sync_project keeps skipping this file on future scans.
+  const existing = stmts.getFileMeta.get(index.module);
   if (existing?.content_hash === fileHash) {
+    if (mtimeMs > 0 && existing.mtime !== mtimeMs) {
+      stmts.updateFileMtime.run(mtimeMs, index.module);
+    }
     return { observations: [], stored: false, savedBytes: 0 };
   }
 
@@ -170,7 +176,8 @@ export function upsertFileIndex(
     fileHash,
     Buffer.byteLength(source, "utf-8"),
     blob.byteLength,
-    index.language
+    index.language,
+    mtimeMs
   );
 
   // BM25 full-text index (delete + insert = upsert; FTS5 has no ON CONFLICT)

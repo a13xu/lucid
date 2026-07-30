@@ -267,7 +267,7 @@ const SKIP_DIRS = new Set([
 ]);
 const MAX_SOURCE_FILES = 10_000;
 
-function indexSourceFile(filepath: string, rootDir: string, projectName: string, stmts: Statements): { exports: string[]; stored: boolean } {
+function indexSourceFile(filepath: string, rootDir: string, projectName: string, stmts: Statements, mtimeMs = 0): { exports: string[]; stored: boolean } {
   const content = readFile(filepath);
   if (!content) return { exports: [], stored: false };
 
@@ -275,7 +275,7 @@ function indexSourceFile(filepath: string, rootDir: string, projectName: string,
   const fileIdx = buildFileIndex(filepath, content);
 
   // Store compressed content in source file index → enables get_context() + grep_code()
-  const result = upsertFileIndex(fileIdx, content, stmts);
+  const result = upsertFileIndex(fileIdx, content, stmts, mtimeMs);
 
   // Add exports to knowledge graph (for recall())
   if (fileIdx.exports.length > 0) {
@@ -313,7 +313,16 @@ function scanSources(dir: string, projectName: string, stmts: Statements, result
       if (stat.isDirectory()) {
         walk(full);
       } else if (SOURCE_EXTS.has(extname(entry).toLowerCase())) {
-        const { exports: syms, stored } = indexSourceFile(full, rootDir, projectName, stmts);
+        const mtimeMs = Math.floor(stat.mtimeMs);
+        // Incremental shortcut: unchanged mtime+size → skip read + hash entirely.
+        // mtime=0 rows (pre-migration) never match, so they re-hash once.
+        const meta = stmts.getFileMeta.get(full.replace(/\\/g, "/"));
+        if (meta && meta.mtime === mtimeMs && meta.original_size === stat.size) {
+          fileCount++;
+          if (fileCount >= MAX_SOURCE_FILES) return;
+          continue;
+        }
+        const { exports: syms, stored } = indexSourceFile(full, rootDir, projectName, stmts, mtimeMs);
         exportedSymbols.push(...syms);
         fileCount++;
         if (stored) storedCount++;

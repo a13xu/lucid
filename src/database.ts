@@ -33,8 +33,19 @@ export function initDatabase(): Database.Database {
   db.pragma("foreign_keys = ON");
 
   createSchema(db);
+  migrateSchema(db);
   console.error(`[lucid] DB: ${dbPath}`);
   return db;
+}
+
+// Additive migrations for DBs created by older versions.
+function migrateSchema(db: Database.Database): void {
+  const fcCols = db.prepare("PRAGMA table_info(file_contents)").all() as Array<{ name: string }>;
+  if (!fcCols.some((c) => c.name === "mtime")) {
+    // mtime (ms since epoch) backs the mtime+size shortcut in sync_project;
+    // 0 = unknown → file is re-read and re-hashed once, then mtime is stored.
+    db.exec("ALTER TABLE file_contents ADD COLUMN mtime INTEGER NOT NULL DEFAULT 0");
+  }
 }
 
 function createSchema(db: Database.Database): void {
@@ -340,7 +351,9 @@ export interface PlanTaskRow {
 export interface Statements {
   // file_contents
   getFileByPath:    Stmt<[string], FileContentRow>;
-  upsertFile:       WriteStmt<[string, Buffer, string, number, number, string]>;
+  upsertFile:       WriteStmt<[string, Buffer, string, number, number, string, number]>;
+  getFileMeta:      Stmt<[string], { content_hash: string; original_size: number; mtime: number }>;
+  updateFileMtime:  WriteStmt<[number, string]>;
   getAllFiles:       Stmt<[], Pick<FileContentRow, "filepath" | "content" | "language" | "content_hash" | "indexed_at">>;
   getRecentFiles:   Stmt<[number], Pick<FileContentRow, "filepath" | "language" | "indexed_at">>;
   deleteFile:       WriteStmt<[string]>;
@@ -422,16 +435,25 @@ export function prepareStatements(db: Database.Database): Statements {
       "SELECT * FROM file_contents WHERE filepath = ?"
     ),
 
-    upsertFile: db.prepare<[string, Buffer, string, number, number, string], unknown>(
-      `INSERT INTO file_contents (filepath, content, content_hash, original_size, compressed_size, language)
-       VALUES (?, ?, ?, ?, ?, ?)
+    upsertFile: db.prepare<[string, Buffer, string, number, number, string, number], unknown>(
+      `INSERT INTO file_contents (filepath, content, content_hash, original_size, compressed_size, language, mtime)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(filepath) DO UPDATE SET
          content = excluded.content,
          content_hash = excluded.content_hash,
          original_size = excluded.original_size,
          compressed_size = excluded.compressed_size,
          language = excluded.language,
+         mtime = excluded.mtime,
          indexed_at = unixepoch()`
+    ),
+
+    getFileMeta: db.prepare<[string], { content_hash: string; original_size: number; mtime: number }>(
+      "SELECT content_hash, original_size, mtime FROM file_contents WHERE filepath = ?"
+    ),
+
+    updateFileMtime: db.prepare<[number, string], unknown>(
+      "UPDATE file_contents SET mtime = ? WHERE filepath = ?"
     ),
 
     getAllFiles: db.prepare<[], Pick<FileContentRow, "filepath" | "content" | "language" | "content_hash" | "indexed_at">>(
