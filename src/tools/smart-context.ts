@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Statements } from "../database.js";
 import { assembleContext } from "../retrieval/context.js";
-import { recall } from "./recall.js";
+import { recallEntities, capEntity } from "./recall.js";
 import { loadConfig } from "../config.js";
 import { createExperience } from "../memory/experience.js";
 
@@ -23,6 +23,33 @@ const TASK_BUDGETS: Record<string, number> = {
   complex:  12000,
 };
 
+/** Compact per-entity render (name, type, capped observations, relations) that
+ *  stops once the char budget is exhausted. */
+function renderKnowledge(entities: ReturnType<typeof recallEntities>, maxChars: number): string {
+  if (entities.length === 0) return "No matching entities in the knowledge graph.";
+
+  const lines: string[] = [];
+  let used = 0;
+  let shown = 0;
+  for (const raw of entities) {
+    const e = capEntity(raw);
+    const block: string[] = [`### ${e.name} (${e.type})`];
+    for (const o of e.observations) block.push(`- ${o}`);
+    if (e.relations.length > 0) {
+      block.push(`- relations: ${e.relations.slice(0, 8).map((r) => `${r.from} —${r.type}→ ${r.to}`).join("; ")}`);
+    }
+    const text = block.join("\n") + "\n";
+    if (shown > 0 && used + text.length > maxChars) break;
+    lines.push(text);
+    used += text.length;
+    shown++;
+  }
+  if (shown < entities.length) {
+    lines.push(`… +${entities.length - shown} more entities (use recall("<topic>") to inspect them)`);
+  }
+  return lines.join("\n");
+}
+
 export async function handleSmartContext(
   stmts: Statements,
   args: z.infer<typeof SmartContextSchema>
@@ -30,12 +57,18 @@ export async function handleSmartContext(
   const cfg = loadConfig();
   const maxTokens = TASK_BUDGETS[args.task_type ?? "moderate"] ?? 6000;
 
-  // 1. Knowledge graph entities (synchronous)
-  const recallResult = recall(stmts, { query: args.query });
+  // Split the budget: knowledge graph gets 25%, code files the rest. Both
+  // sections MUST stay bounded — the combined response has to fit the MCP
+  // client's per-response token limit (~25k), regardless of graph size.
+  const knowledgeBudgetChars = Math.floor(maxTokens * 0.25) * 4;
+  const codeBudget = maxTokens - Math.floor(maxTokens * 0.25);
+
+  // 1. Knowledge graph entities (synchronous, compact render within budget)
+  const recallResult = renderKnowledge(recallEntities(stmts, args.query), knowledgeBudgetChars);
 
   // 2. Code context with adaptive budget (async)
   const contextResult = await assembleContext(args.query, stmts, cfg, {
-    maxTokens,
+    maxTokens: codeBudget,
     dirs: args.dirs,
   });
 
@@ -47,7 +80,7 @@ export async function handleSmartContext(
     stmts
   );
 
-  const budgetUsedPct = Math.round((contextResult.totalTokens / maxTokens) * 100);
+  const budgetUsedPct = Math.round((contextResult.totalTokens / codeBudget) * 100);
 
   const sections: string[] = [
     "## Knowledge Context (entities)",

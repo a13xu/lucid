@@ -28,6 +28,18 @@ export type ToolMap = Record<string, RegisteredTool>;
 
 export type ToolReturn = string | { text: string; structured: Record<string, unknown> };
 
+// Claude Code rejects MCP tool responses above ~25k tokens. Hard-cap plain-text
+// outputs well under that (≈18k tokens at ~4 chars/token) so no tool can ever
+// produce an unusable response, whatever the underlying data size.
+const MAX_OUTPUT_CHARS = 72_000;
+
+function capOutput(name: string, text: string): string {
+  if (text.length <= MAX_OUTPUT_CHARS) return text;
+  console.error(`[lucid] ${name}: output truncated ${text.length} → ${MAX_OUTPUT_CHARS} chars (MCP response limit)`);
+  return text.slice(0, MAX_OUTPUT_CHARS) +
+    `\n\n… [output truncated at ~18k tokens — narrow the query or use a smaller scope]`;
+}
+
 export function tx<I>(name: string, handler: (args: I) => ToolReturn | Promise<ToolReturn>) {
   return async (args: I) => {
     const guard = guardRequest(name, args as Record<string, unknown>);
@@ -40,7 +52,7 @@ export function tx<I>(name: string, handler: (args: I) => ToolReturn | Promise<T
     try {
       const out = await handler(args);
       if (typeof out === "string") {
-        return { content: [{ type: "text" as const, text: guardOutput(name, out) }] };
+        return { content: [{ type: "text" as const, text: capOutput(name, guardOutput(name, out)) }] };
       }
       return {
         content: [{ type: "text" as const, text: guardOutput(name, out.text) }],

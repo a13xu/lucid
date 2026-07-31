@@ -41,8 +41,9 @@ function buildEntityWithRelations(
   };
 }
 
-export function recall(stmts: Statements, input: RecallInput): string {
-  const sanitized = sanitizeFTSQuery(input.query);
+/** Raw entity search — shared by recall() and smart_context. */
+export function recallEntities(stmts: Statements, query: string): EntityWithRelations[] {
+  const sanitized = sanitizeFTSQuery(query);
   let rows: EntityRow[] = [];
 
   if (sanitized) {
@@ -56,14 +57,55 @@ export function recall(stmts: Statements, input: RecallInput): string {
 
   // Fallback LIKE dacă FTS nu a returnat rezultate
   if (rows.length === 0) {
-    const like = `%${input.query}%`;
+    const like = `%${query}%`;
     rows = stmts.searchLike.all(like, like, like);
   }
 
-  if (rows.length === 0) {
+  return rows.map((row) => buildEntityWithRelations(stmts, row));
+}
+
+// Output caps — entities like the project entity accumulate one observation
+// per indexed file, so uncapped JSON can exceed the MCP client's per-response
+// token limit (~25k). Whole entities are dropped once the budget is hit so the
+// output stays a valid JSON array.
+const MAX_OBS_PER_ENTITY = 15;
+const MAX_OBS_CHARS = 500;
+// recall responses carry the JSON twice (text + structuredContent), so keep
+// the text half ≤ ~8k tokens → whole response ≤ ~16k, under the ~25k client cap.
+const DEFAULT_MAX_CHARS = 32_000;
+
+export function capEntity(e: EntityWithRelations): EntityWithRelations {
+  const obs = e.observations
+    .slice(0, MAX_OBS_PER_ENTITY)
+    .map((o) => (o.length > MAX_OBS_CHARS ? o.slice(0, MAX_OBS_CHARS) + "…" : o));
+  if (e.observations.length > MAX_OBS_PER_ENTITY) {
+    obs.push(`… +${e.observations.length - MAX_OBS_PER_ENTITY} more observations (use recall_all for the full graph)`);
+  }
+  return { ...e, observations: obs };
+}
+
+export function recall(
+  stmts: Statements,
+  input: RecallInput,
+  opts: { maxChars?: number } = {}
+): string {
+  const entities = recallEntities(stmts, input.query);
+  if (entities.length === 0) {
     return `No results found for "${input.query}".`;
   }
 
-  const entities = rows.map((row) => buildEntityWithRelations(stmts, row));
-  return JSON.stringify(entities, null, 2);
+  const maxChars = opts.maxChars ?? DEFAULT_MAX_CHARS;
+  const kept: EntityWithRelations[] = [];
+  let used = 2; // "[]"
+  for (const e of entities) {
+    const capped = capEntity(e);
+    const len = JSON.stringify(capped, null, 2).length;
+    if (kept.length > 0 && used + len > maxChars) break;
+    kept.push(capped);
+    used += len;
+  }
+  if (kept.length < entities.length) {
+    console.error(`[lucid] recall: ${entities.length - kept.length} entities dropped (output budget)`);
+  }
+  return JSON.stringify(kept, null, 2);
 }
