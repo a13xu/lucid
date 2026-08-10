@@ -24,6 +24,14 @@ const LUCID_ROOT = "__LUCID_ROOT__";
 const DB_PATH = process.env.MEMORY_DB_PATH || join(homedir(), ".claude", "memory.db");
 const QUOTA_CACHE = join(homedir(), ".claude", "lucid-quota-cache.json");
 const QUOTA_TTL_MS = 60 * 1000;
+/**
+ * How long a cached reading may still be served after a failed refresh. The
+ * usage endpoint rate-limits (HTTP 429) when several Claude Code windows render
+ * at once, and dropping the segment on every hiccup makes the bar flicker
+ * between two widths. Quota moves slowly, and reset times are absolute, so a
+ * reading this recent is still worth showing; past it, show nothing.
+ */
+const QUOTA_STALE_MAX_MS = 30 * 60 * 1000;
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 
 // Anchored at the Lucid build so Node's resolver finds better-sqlite3 whether
@@ -98,18 +106,28 @@ function buildQuotaSegments(data) {
   return segments;
 }
 
-async function quotaSegments(debug) {
+function readQuotaCache() {
   try {
-    if (!debug) {
-      try {
-        const c = JSON.parse(readFileSync(QUOTA_CACHE, "utf8"));
-        if (Date.now() - c.ts < QUOTA_TTL_MS && Array.isArray(c.segments)) return c.segments;
-      } catch { /* cache miss */ }
-    }
+    const c = JSON.parse(readFileSync(QUOTA_CACHE, "utf8"));
+    if (Array.isArray(c.segments) && typeof c.ts === "number") return c;
+  } catch { /* no usable cache */ }
+  return null;
+}
+
+async function quotaSegments(debug) {
+  const cached = readQuotaCache();
+  if (!debug && cached && Date.now() - cached.ts < QUOTA_TTL_MS) return cached.segments;
+
+  // Every failure path lands here rather than on []: a refresh that fails is a
+  // reason to keep showing the last reading, not to blank the segment.
+  const lastKnown = () =>
+    cached && Date.now() - cached.ts < QUOTA_STALE_MAX_MS ? cached.segments : [];
+
+  try {
     const credsFile = join(homedir(), ".claude", ".credentials.json");
     const creds = JSON.parse(readFileSync(credsFile, "utf8")).claudeAiOauth;
-    if (!creds || !creds.accessToken) return [];
-    if (creds.expiresAt && creds.expiresAt < Date.now()) return [];
+    if (!creds || !creds.accessToken) return lastKnown();
+    if (creds.expiresAt && creds.expiresAt < Date.now()) return lastKnown();
     const res = await fetch(USAGE_URL, {
       headers: {
         Authorization: `Bearer ${creds.accessToken}`,
@@ -118,8 +136,9 @@ async function quotaSegments(debug) {
       signal: AbortSignal.timeout(3000),
     });
     if (!res.ok) {
+      // 429 is routine: several windows rendering at once share this endpoint.
       if (debug) console.error("usage endpoint HTTP", res.status);
-      return [];
+      return lastKnown();
     }
     const data = await res.json();
     if (debug) console.error(JSON.stringify(data, null, 2));
@@ -128,7 +147,7 @@ async function quotaSegments(debug) {
     return segments;
   } catch (e) {
     if (debug) console.error("quota error:", e.message);
-    return [];
+    return lastKnown();
   }
 }
 
@@ -205,8 +224,13 @@ async function lucidSegments(cwd) {
         }
         seg += " ·/tasks";
         segments.push(seg);
+      } else {
+        // Reaching here means the queries succeeded and there simply is no
+        // active plan for this project. Say so rather than dropping the segment:
+        // an absent 📋 is indistinguishable from a broken status bar.
+        segments.push("📋 no active plan ·/tasks");
       }
-    } catch { /* plan info unavailable */ }
+    } catch { /* plan info unavailable — omit the segment entirely */ }
   } catch {
     /* better-sqlite3 or DB missing — skip Lucid segments entirely */
   } finally {
