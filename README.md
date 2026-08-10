@@ -23,6 +23,19 @@ claude mcp add --transport stdio lucid -- lucid
 claude mcp add --transport stdio lucid -- npx -y @a13xu/lucid
 ```
 
+### Optional: status bar
+
+```bash
+lucid setup statusline
+```
+
+Installs a Claude Code status line showing the model, remaining 5h/weekly quota,
+knowledge-graph size, and the progress of the active plan **for the project you
+are in**, plus a `/tasks` command that expands it into the full task list. It
+writes `lucid-statusline.mjs`, `lucid-tasks.mjs`, and `commands/tasks.md` into
+`~/.claude/` and registers `statusLine` in `~/.claude/settings.json`, preserving
+every other setting and backing the file up first. Safe to re-run.
+
 Or add to `.mcp.json` in your project root:
 
 ```json

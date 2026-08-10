@@ -30,7 +30,11 @@ export async function maybeRunCli(argv: string[]): Promise<number | null> {
       const { setupGrammars } = await import("./indexer/grammars.js");
       return await setupGrammars();
     }
-    process.stderr.write(`Usage: lucid setup <grammars>\n`);
+    if (args[0] === "statusline") {
+      const { runStatuslineSetup } = await import("./setup/statusline.js");
+      return runStatuslineSetup();
+    }
+    process.stderr.write(`Usage: lucid setup <grammars|statusline>\n`);
     return 64;
   }
 

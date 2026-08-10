@@ -103,6 +103,18 @@ function resolveProjectName(root: string): string {
   return basename(root) || root;
 }
 
+/**
+ * Scope for an explicit directory. Used by the statusline and /tasks helpers,
+ * which are handed the session's cwd rather than running inside the project.
+ */
+export function resolveScope(dir: string): ProjectScope {
+  const root = process.env["LUCID_PROJECT_ROOT"]
+    ? resolve(process.env["LUCID_PROJECT_ROOT"])
+    : findProjectRoot(dir);
+
+  return { id: canonicalProjectId(root), name: resolveProjectName(root), root };
+}
+
 let _cached: ProjectScope | null = null;
 
 /**
@@ -110,13 +122,7 @@ let _cached: ProjectScope | null = null;
  * for the lifetime of an MCP server process.
  */
 export function getProjectScope(): ProjectScope {
-  if (_cached) return _cached;
-
-  const root = process.env["LUCID_PROJECT_ROOT"]
-    ? resolve(process.env["LUCID_PROJECT_ROOT"])
-    : findProjectRoot(process.cwd());
-
-  _cached = { id: canonicalProjectId(root), name: resolveProjectName(root), root };
+  if (!_cached) _cached = resolveScope(process.cwd());
   return _cached;
 }
 
