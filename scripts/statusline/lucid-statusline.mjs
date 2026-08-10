@@ -239,6 +239,27 @@ async function lucidSegments(cwd) {
   return segments;
 }
 
+// ---------- Watch daemon ----------
+
+/**
+ * The `lucid watch` daemon, if it is alive. Same check `lucid status` performs:
+ * a pidfile plus signal 0, which costs microseconds and touches no network.
+ *
+ * Shown only when running. The daemon is optional — sync falls back to a direct
+ * SQLite write without it — so "off" is the ordinary state and not worth the
+ * width. A segment that never changes teaches the eye to skip the whole bar.
+ */
+function watchSegments() {
+  try {
+    const pid = Number(readFileSync(join(homedir(), ".lucid", "watch.pid"), "utf8").trim());
+    if (!Number.isInteger(pid) || pid <= 0) return [];
+    process.kill(pid, 0);   // throws if the process is gone (stale pidfile)
+    return ["👁 watch"];
+  } catch {
+    return [];
+  }
+}
+
 // ---------- Main ----------
 
 async function main() {
@@ -256,8 +277,7 @@ async function main() {
 
   parts.push(...(await quotaSegments(debug)));
   parts.push(...(await lucidSegments(cwd)));
-
-  parts.push("lucid: watch·status·guard·session");
+  parts.push(...watchSegments());
 
   process.stdout.write(parts.join(" | "));
 }
