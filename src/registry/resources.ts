@@ -45,13 +45,13 @@ export function registerResources(server: McpServer, ctx: RegistryCtx): void {
 
   server.registerResource("plan-list", "lucid://plan/list", {
     title: "Active Plans",
-    description: "All active development plans with progress summary.",
+    description: "Active development plans for the current project, with progress summary.",
     mimeType: "text/markdown",
   }, async (uri) => ({
     contents: [{
       uri: uri.href,
       mimeType: "text/markdown",
-      text: handlePlanList(stmts, { status: "active" }),
+      text: handlePlanList(stmts, { status: "active", scope: "project" }),
     }],
   }));
 

@@ -46,6 +46,19 @@ function migrateSchema(db: Database.Database): void {
     // 0 = unknown → file is re-read and re-hashed once, then mtime is stored.
     db.exec("ALTER TABLE file_contents ADD COLUMN mtime INTEGER NOT NULL DEFAULT 0");
   }
+
+  // Project scoping for plans. Existing rows keep project='' and are reported as
+  // "unscoped" by plan_list rather than being hidden — they predate the column
+  // and there is no reliable way to infer which checkout they belong to.
+  const planCols = db.prepare("PRAGMA table_info(plans)").all() as Array<{ name: string }>;
+  if (!planCols.some((c) => c.name === "project")) {
+    db.exec("ALTER TABLE plans ADD COLUMN project TEXT NOT NULL DEFAULT ''");
+  }
+  if (!planCols.some((c) => c.name === "project_name")) {
+    db.exec("ALTER TABLE plans ADD COLUMN project_name TEXT NOT NULL DEFAULT ''");
+  }
+  // Safe here (not in createSchema): both columns are guaranteed to exist by now.
+  db.exec("CREATE INDEX IF NOT EXISTS idx_plans_project ON plans(project, status)");
 }
 
 function createSchema(db: Database.Database): void {
@@ -179,13 +192,18 @@ function createSchema(db: Database.Database): void {
 
     -- Planning tables
     CREATE TABLE IF NOT EXISTS plans (
-      id          INTEGER PRIMARY KEY,
-      title       TEXT NOT NULL,
-      description TEXT NOT NULL,
-      user_story  TEXT NOT NULL,
-      status      TEXT NOT NULL DEFAULT 'active',
-      created_at  INTEGER DEFAULT (unixepoch()),
-      updated_at  INTEGER DEFAULT (unixepoch())
+      id           INTEGER PRIMARY KEY,
+      title        TEXT NOT NULL,
+      description  TEXT NOT NULL,
+      user_story   TEXT NOT NULL,
+      status       TEXT NOT NULL DEFAULT 'active',
+      -- Canonical project root (see src/project.ts). One DB is shared by every
+      -- checkout, so without this key each project sees the others' plans.
+      -- '' = legacy row written before scoping existed.
+      project      TEXT NOT NULL DEFAULT '',
+      project_name TEXT NOT NULL DEFAULT '',
+      created_at   INTEGER DEFAULT (unixepoch()),
+      updated_at   INTEGER DEFAULT (unixepoch())
     );
 
     CREATE TABLE IF NOT EXISTS plan_tasks (
@@ -203,6 +221,8 @@ function createSchema(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_plan_tasks_plan ON plan_tasks(plan_id, seq);
     CREATE INDEX IF NOT EXISTS idx_plans_status    ON plans(status);
+    -- idx_plans_project is created in migrateSchema(): on a pre-existing DB the
+    -- CREATE TABLE above is a no-op, so plans.project does not exist yet here.
 
     -- Versioned backups of file content (last N kept per file)
     CREATE TABLE IF NOT EXISTS file_backups (
@@ -298,6 +318,9 @@ export interface PlanRow {
   description: string;
   user_story: string;
   status: string;
+  /** Canonical project root; '' for rows created before scoping existed. */
+  project: string;
+  project_name: string;
   created_at: number;
   updated_at: number;
 }
@@ -396,10 +419,12 @@ export interface Statements {
   getPositiveFileRewards: Stmt<[], FileRewardRow>;
   getTopFileRewards:      Stmt<[number], FileRewardRow>;
   // plans
-  insertPlan:             WriteStmt<[string, string, string]>;            // title, description, user_story
+  insertPlan:             WriteStmt<[string, string, string, string, string]>; // title, description, user_story, project, project_name
   getPlanById:            Stmt<[number], PlanRow>;
   getAllPlans:             Stmt<[], PlanRow>;
   updatePlanStatus:       WriteStmt<[string, number]>;                   // status, id
+  updatePlanProject:      WriteStmt<[string, string, number]>;           // project, project_name, id
+  deletePlanById:         WriteStmt<[number]>;                           // cascades to plan_tasks (foreign_keys=ON)
   // plan_tasks
   insertPlanTask:         WriteStmt<[number, number, string, string, string]>; // plan_id, seq, title, description, test_criteria
   getTasksByPlanId:       Stmt<[number], PlanTaskRow>;
@@ -641,8 +666,9 @@ export function prepareStatements(db: Database.Database): Statements {
     ),
 
     // plans
-    insertPlan: db.prepare<[string, string, string], unknown>(
-      "INSERT INTO plans (title, description, user_story) VALUES (?, ?, ?)"
+    insertPlan: db.prepare<[string, string, string, string, string], unknown>(
+      `INSERT INTO plans (title, description, user_story, project, project_name)
+       VALUES (?, ?, ?, ?, ?)`
     ),
 
     getPlanById: db.prepare<[number], PlanRow>(
@@ -655,6 +681,16 @@ export function prepareStatements(db: Database.Database): Statements {
 
     updatePlanStatus: db.prepare<[string, number], unknown>(
       "UPDATE plans SET status = ?, updated_at = unixepoch() WHERE id = ?"
+    ),
+
+    updatePlanProject: db.prepare<[string, string, number], unknown>(
+      "UPDATE plans SET project = ?, project_name = ?, updated_at = unixepoch() WHERE id = ?"
+    ),
+
+    // plan_tasks rows go with it via ON DELETE CASCADE — initDatabase() sets
+    // `PRAGMA foreign_keys = ON`, without which they would be orphaned.
+    deletePlanById: db.prepare<[number], unknown>(
+      "DELETE FROM plans WHERE id = ?"
     ),
 
     // plan_tasks

@@ -46,7 +46,8 @@ Claude Code → StdioServerTransport → guardRequest() [rate limit + WAF + SSRF
 - `entities`, `relations`, `entities_fts` — Knowledge graph (FTS5 with Porter stemming)
 - `file_contents`, `file_diffs` — Indexed files (zlib level-9 compression + SHA256 change detection)
 - `experiences`, `file_rewards` — Reward signals for TF-IDF ranking
-- `plans`, `plan_tasks` — Development plan tracking
+- `plans`, `plan_tasks` — Development plan tracking, scoped per project via
+  `plans.project` (canonical project root; `''` on rows predating the column)
 - `instances`, `instance_actions` — Audit log (heartbeat every 15s, max 200 actions kept)
 
 **Key source modules:**
@@ -62,7 +63,8 @@ Claude Code → StdioServerTransport → guardRequest() [rate limit + WAF + SSRF
 | `src/guardian/coding-analyzer.ts` | 25 Golden Rules checker (file size, naming, nesting, component rules) |
 | `src/security/guard.ts` | Rate limiting + WAF injection detection + SSRF allowlist + output secret scan |
 | `src/store/content.ts` | zlib compress/decompress + SHA256 hash |
-| `src/tools/plan.ts` | Plan CRUD + task status transitions |
+| `src/project.ts` | Project root + canonical scope key shared by every project-aware tool |
+| `src/tools/plan.ts` | Plan CRUD, task status transitions, archive/delete/cleanup — all scoped to the current project |
 | `src/memory/experience.ts` | Reward/penalize signals, decay (half-life ~14 days) |
 
 **HTTP daemon** (`src/http/`): `lucid watch` starts a chokidar watcher + Express server on port 7821 (`/sync`, `/sync-project`, `/context`, `/validate`, `/health`) so hooks and shell scripts can sync without going through Claude. (`web/` contains remnants of a removed Express UI — not shipped, not runnable.)
@@ -89,6 +91,8 @@ Claude Code → StdioServerTransport → guardRequest() [rate limit + WAF + SSRF
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `MEMORY_DB_PATH` | `~/.claude/memory.db` | SQLite database location |
+| `LUCID_PROJECT_ROOT` | auto-detected from cwd | Override the project a session's plans belong to |
+| `LUCID_PROJECT_NAME` | dir name / `package.json` name | Override the project's display label |
 | `QDRANT_URL` | — | Optional vector DB; falls back to TF-IDF if not set |
 | `QDRANT_API_KEY` | — | Qdrant auth |
 | `OPENAI_API_KEY` | — | For embeddings (if using Qdrant) |
