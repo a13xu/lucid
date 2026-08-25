@@ -16,6 +16,11 @@ const OPUS_TRIGGERS = [
   "security", "review", "design", "migrate", "fix bug",
 ];
 
+// Sonnet only when the caller explicitly parallelizes mid-level work.
+const SONNET_TRIGGERS = [
+  "parallel", "parallelize", "fan out", "bulk",
+];
+
 // Always the latest generation of each tier. Update on new model releases.
 const MODEL_IDS = {
   haiku:  "claude-haiku-4-5",
@@ -35,19 +40,26 @@ export function handleSuggestModel(
   const lower = args.task_description.toLowerCase();
   const haikuTrigger = HAIKU_TRIGGERS.find((t) => lower.includes(t));
   const opusTrigger = OPUS_TRIGGERS.find((t) => lower.includes(t));
+  const sonnetTrigger = SONNET_TRIGGERS.find((t) => lower.includes(t));
 
-  // Opus wins over Haiku: "review recent changes" is implementation-tier work.
+  // Opus wins over everything: "review recent changes" is implementation-tier
+  // work. The default is Opus too — an unclassified task is more likely real
+  // work than a lookup, and a weak-model default silently degrades it.
   const model: "haiku" | "sonnet" | "opus" = opusTrigger
     ? "opus"
-    : haikuTrigger
-      ? "haiku"
-      : "sonnet";
+    : sonnetTrigger
+      ? "sonnet"
+      : haikuTrigger
+        ? "haiku"
+        : "opus";
 
   const reasoning = opusTrigger
     ? `Task matches implementation/analysis pattern ("${opusTrigger}") — Opus for edits, debugging, reviews, and architecture.`
-    : haikuTrigger
-      ? `Task matches retrieval/lookup pattern ("${haikuTrigger}") — Haiku is faster for read-only queries.`
-      : "No specific trigger detected — defaulting to Sonnet for mid-level reasoning and generation.";
+    : sonnetTrigger
+      ? `Task parallelizes mid-level work ("${sonnetTrigger}") — Sonnet for fan-out throughput.`
+      : haikuTrigger
+        ? `Task matches retrieval/lookup pattern ("${haikuTrigger}") — Haiku is faster for read-only queries.`
+        : "No specific trigger detected — defaulting to Opus; unclassified tasks are treated as real work, never downgraded.";
 
   return JSON.stringify({
     model,
