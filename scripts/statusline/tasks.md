@@ -1,5 +1,6 @@
 ---
 description: Drill-down — task-urile planului activ din Lucid (bara de status 📋)
+argument-hint: "[--all]"
 allowed-tools: Bash(node:*)
 ---
 

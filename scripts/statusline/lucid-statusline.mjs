@@ -61,11 +61,47 @@ function miniBar(leftPct) {
   return "▓".repeat(filled) + "░".repeat(5 - filled);
 }
 
-function fmtReset(iso, withDay) {
-  const d = new Date(iso);
+function fmtReset(ts, withDay) {
+  // ISO string from the OAuth endpoint; stdin rate_limits may hand an epoch.
+  const d = typeof ts === "number" ? new Date(ts < 1e12 ? ts * 1000 : ts) : new Date(ts);
   if (isNaN(d.getTime())) return "";
   const hm = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
   return withDay ? `${RO_DAYS[d.getDay()]} ${hm}` : hm;
+}
+
+/**
+ * usedPct must arrive ALREADY normalised to 0-100. The 0-1-fraction handling
+ * lives in pct() at the OAuth call site only — stdin's used_percentage is
+ * documented as a percentage, where a legitimate 0.4 means 0.4% used and must
+ * not be re-read as a fraction.
+ */
+function quotaSeg(icon, label, usedPct, resetsAt, withDay) {
+  const left = Math.max(0, Math.min(100, 100 - usedPct));
+  let seg = `${icon} ${label} ${miniBar(left)} ${Math.round(left)}% left`;
+  if (resetsAt) {
+    const r = fmtReset(resetsAt, withDay);
+    if (r) seg += ` ·${r}`;
+  }
+  return seg;
+}
+
+/**
+ * 5h/7d quota straight from the session JSON — Claude Code ≥2.1.251 pipes
+ * `rate_limits` on stdin, which beats the OAuth fetch on every axis: always
+ * fresh, no token read, no network, no 429. Returns null on older versions so
+ * the caller can fall back to the fetch.
+ */
+function stdinRateLimitSegments(input) {
+  const rl = input && input.rate_limits;
+  if (!rl) return null;
+  const segments = [];
+  if (rl.five_hour && typeof rl.five_hour.used_percentage === "number") {
+    segments.push(quotaSeg("⏳", "5h", rl.five_hour.used_percentage, rl.five_hour.resets_at, false));
+  }
+  if (rl.seven_day && typeof rl.seven_day.used_percentage === "number") {
+    segments.push(quotaSeg("📆", "7d", rl.seven_day.used_percentage, rl.seven_day.resets_at, true));
+  }
+  return segments.length ? segments : null;
 }
 
 function quotaBucket(data, keys) {
@@ -76,52 +112,66 @@ function quotaBucket(data, keys) {
   return null;
 }
 
-function buildQuotaSegments(data) {
-  const segments = [];
+function buildQuota(data) {
+  // core = 5h + 7d; scoped = per-model weekly caps from limits[] (e.g. Fable),
+  // which stdin rate_limits does not carry — the OAuth endpoint stays their
+  // only source, so the two groups are cached separately.
+  const core = [];
   const five = quotaBucket(data, ["five_hour", "session", "fiveHour"]);
-  if (five) {
-    const left = 100 - pct(five.utilization);
-    let seg = `⏳ 5h ${miniBar(left)} ${Math.round(left)}% left`;
-    const reset = five.resets_at || five.resetsAt;
-    if (reset) seg += ` ·${fmtReset(reset, false)}`;
-    segments.push(seg);
-  }
+  if (five) core.push(quotaSeg("⏳", "5h", pct(five.utilization), five.resets_at || five.resetsAt, false));
   const week = quotaBucket(data, ["seven_day", "sevenDay", "weekly"]);
-  if (week) {
-    const left = 100 - pct(week.utilization);
-    let seg = `📆 7d ${miniBar(left)} ${Math.round(left)}% left`;
-    const reset = week.resets_at || week.resetsAt;
-    if (reset) seg += ` ·${fmtReset(reset, true)}`;
-    segments.push(seg);
-  }
-  // Model-scoped weekly limits from the limits[] array (e.g. Fable weekly).
+  if (week) core.push(quotaSeg("📆", "7d", pct(week.utilization), week.resets_at || week.resetsAt, true));
+
+  const scoped = [];
   if (Array.isArray(data && data.limits)) {
     for (const l of data.limits) {
       if (l && l.kind === "weekly_scoped" && typeof l.percent === "number") {
         const label = (l.scope && l.scope.model && l.scope.model.display_name) || "scoped";
-        segments.push(`${label} ${Math.round(100 - pct(l.percent))}%`);
+        scoped.push(`${label} ${Math.round(100 - pct(l.percent))}%`);
       }
     }
   }
-  return segments;
+  return { core, scoped };
 }
 
 function readQuotaCache() {
   try {
     const c = JSON.parse(readFileSync(QUOTA_CACHE, "utf8"));
-    if (Array.isArray(c.segments) && typeof c.ts === "number") return c;
+    if (typeof c.ts !== "number") return null;
+    if (Array.isArray(c.core)) return { ts: c.ts, core: c.core, scoped: Array.isArray(c.scoped) ? c.scoped : [] };
+    // Pre-split cache: core and scoped strings are mixed together. Usable only
+    // when the caller wants everything; a scoped-only read must refetch.
+    if (Array.isArray(c.segments)) return { ts: c.ts, core: c.segments, scoped: null };
   } catch { /* no usable cache */ }
   return null;
 }
 
-async function quotaSegments(debug) {
+/**
+ * Quota via the OAuth usage endpoint. With scopedOnly=true only the per-model
+ * weekly caps are returned — used when stdin already delivered 5h/7d, which
+ * that endpoint alone still cannot.
+ */
+async function quotaSegments(debug, scopedOnly = false) {
   const cached = readQuotaCache();
-  if (!debug && cached && Date.now() - cached.ts < QUOTA_TTL_MS) return cached.segments;
+  const pick = (q) => {
+    if (scopedOnly) return q.scoped;   // null = mixed legacy cache → unusable
+    return q.scoped === null ? q.core : [...q.core, ...q.scoped];
+  };
+
+  if (!debug && cached && Date.now() - cached.ts < QUOTA_TTL_MS) {
+    const hit = pick(cached);
+    if (hit) return hit;
+  }
 
   // Every failure path lands here rather than on []: a refresh that fails is a
   // reason to keep showing the last reading, not to blank the segment.
-  const lastKnown = () =>
-    cached && Date.now() - cached.ts < QUOTA_STALE_MAX_MS ? cached.segments : [];
+  const lastKnown = () => {
+    if (cached && Date.now() - cached.ts < QUOTA_STALE_MAX_MS) {
+      const w = pick(cached);
+      if (w) return w;
+    }
+    return [];
+  };
 
   try {
     const credsFile = join(homedir(), ".claude", ".credentials.json");
@@ -142,13 +192,27 @@ async function quotaSegments(debug) {
     }
     const data = await res.json();
     if (debug) console.error(JSON.stringify(data, null, 2));
-    const segments = buildQuotaSegments(data);
-    try { writeFileSync(QUOTA_CACHE, JSON.stringify({ ts: Date.now(), segments })); } catch { /* ignore */ }
-    return segments;
+    const { core, scoped } = buildQuota(data);
+    try { writeFileSync(QUOTA_CACHE, JSON.stringify({ ts: Date.now(), core, scoped })); } catch { /* ignore */ }
+    return scopedOnly ? scoped : [...core, ...scoped];
   } catch (e) {
     if (debug) console.error("quota error:", e.message);
     return lastKnown();
   }
+}
+
+// ---------- Context window ----------
+
+/**
+ * Context usage from the session JSON (Claude Code pipes context_window on
+ * stdin). ⚠ from 85%: auto-compact fires around that mark, so past it the
+ * number is a prompt to reach a task boundary, not trivia.
+ */
+function contextSegments(input) {
+  const cw = input && input.context_window;
+  if (!cw || typeof cw.used_percentage !== "number") return [];
+  const used = Math.max(0, Math.min(100, cw.used_percentage));
+  return [`🪟 ctx ${Math.round(used)}%${used >= 85 ? " ⚠" : ""}`];
 }
 
 // ---------- Lucid DB (stats + plan progress) ----------
@@ -275,7 +339,17 @@ async function main() {
     (input.workspace && (input.workspace.current_dir || input.workspace.project_dir)) ||
     process.cwd();
 
-  parts.push(...(await quotaSegments(debug)));
+  // 5h/7d from stdin when this Claude Code provides them (≥2.1.251); the OAuth
+  // endpoint then only supplies what stdin cannot — per-model weekly caps. On
+  // older versions the endpoint carries everything, as before.
+  const stdinQuota = stdinRateLimitSegments(input);
+  if (stdinQuota) {
+    parts.push(...stdinQuota);
+    parts.push(...(await quotaSegments(debug, true)));
+  } else {
+    parts.push(...(await quotaSegments(debug)));
+  }
+  parts.push(...contextSegments(input));
   parts.push(...(await lucidSegments(cwd)));
   parts.push(...watchSegments());
 

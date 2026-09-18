@@ -74,8 +74,10 @@ const LUCID_HOOK: HookEntry = {
 // PreToolUse hook: snapshot file + block destructive truncates BEFORE write.
 // Reads Claude Code's PreToolUse JSON from stdin; exit 2 hard-blocks the tool.
 // Marker token included so we can idempotently detect prior installs.
+// No MultiEdit here: the tool was folded into Edit and no longer exists in
+// current Claude Code, so the alternative only added a dead branch to the regex.
 const LUCID_PRE_EDIT_HOOK: HookEntry = {
-  matcher: "Write|Edit|MultiEdit|NotebookEdit",
+  matcher: "Write|Edit|NotebookEdit",
   hooks: [
     {
       type: "command",
