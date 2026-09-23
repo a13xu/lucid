@@ -24,8 +24,11 @@ export function registerIndexingTools(server: McpServer, ctx: RegistryCtx): Tool
     sync_file: server.registerTool("sync_file", {
       title: "Sync File",
       description:
-        "Index or re-index a single source file after it was written or modified. " +
-        "IMPORTANT: call this automatically after every Write or Edit tool call.",
+        "Index or re-index a single source file. Skips instantly when the content hash is " +
+        "unchanged; otherwise stores the compressed content and a line diff against the previous " +
+        "version. Edits made with Write/Edit/NotebookEdit are already synced by the lucid-sync " +
+        "hook that init_project installs, so call this only for a file changed some other way " +
+        "(Bash, codegen) — or use sync_project for many files.",
       inputSchema: SyncFileSchema.shape,
     }, tx("sync_file", (args) => handleSyncFile(stmts, args))),
 

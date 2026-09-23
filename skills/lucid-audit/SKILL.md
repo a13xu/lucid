@@ -1,84 +1,30 @@
 ---
 name: lucid-audit
-description: MANDATORY before marking any task done — runs Logic Guardian + Code Quality checks. HARD-GATE blocks completion without validation.
+description: Validate changed code with Lucid's Logic Guardian (drift patterns) and Code Quality checks before calling it done, committing, or opening a PR. Use after implementing a feature, fix, or refactor.
 argument-hint: "[file path or 'all changed files']"
 allowed-tools:
-  - mcp__lucid__suggest_model
   - mcp__lucid__validate_file
   - mcp__lucid__check_drift
   - mcp__lucid__get_checklist
   - mcp__lucid__check_code_quality
   - mcp__lucid__coding_rules
   - mcp__lucid__get_recent
-  - mcp__lucid__sync_file
   - Read
   - Glob
 ---
 
-<HARD-GATE>
-You are about to say "done", "fixed", "complete", or "implemented".
-STOP. You have NOT verified the code yet.
+Code that looks right can still invert a condition, miss a boundary, or leave a
+copy-pasted name stale. The validators catch the mechanical share of those mistakes
+cheaply, so run them on every file you changed before reporting the work as done.
+Skip this for read-only work, research, or changes with no logic in them.
 
-Do NOT mark any task as done, do NOT commit, do NOT say the work is complete
-until you have run BOTH validators below and fixed all 🔴 CRITICAL issues.
+1. `validate_file(path)` on each changed file (`get_recent` lists them if needed).
+   Fix every 🔴 critical finding and re-run until none remain.
+2. `check_code_quality(path)` on the same files. Fix 🔴 high findings, fix 🟠 medium
+   ones where the change is safe, and leave 🔵 low for later.
+3. For intricate logic, `get_checklist()` gives the five-pass manual review (trace
+   concrete inputs, contracts, common drift patterns, integration, one-sentence
+   explanation). For a snippet not yet on disk, use `check_drift(code, language)`.
 
-"It looks correct" is not verification. Run the tools.
-</HARD-GATE>
-
-## When to invoke
-
-**INVOKE when:** about to say done/fixed/complete/implemented, before committing, before creating a PR
-**DO NOT INVOKE for:** read-only tasks, pure research, config changes with no logic
-
-## Steps
-
-```dot
-digraph lucid_audit {
-    "About to say done?" -> "validate_file(path)";
-    "validate_file(path)" -> "Critical issues?";
-    "Critical issues?" -> "Fix issues" [label="yes 🔴"];
-    "Fix issues" -> "validate_file(path)";
-    "Critical issues?" -> "check_code_quality(path)" [label="no ✓"];
-    "check_code_quality(path)" -> "HIGH issues?";
-    "HIGH issues?" -> "Fix if safe" [label="yes 🟠"];
-    "Fix if safe" -> "Mark done ✓";
-    "HIGH issues?" -> "Mark done ✓" [label="no ✓"];
-}
-```
-
-### 0. Get model recommendation
-```
-suggest_model(task_description="<paste the file path or description of what was written>")
-```
-Say: **"Using [model] — [reasoning]"** then proceed.
-
-### 1. Validate logic correctness
-```
-validate_file(path="<file you wrote or modified>")
-```
-Fix every 🔴 CRITICAL issue. Re-run until clean.
-
-### 2. Validate code quality
-```
-check_code_quality(path="<same file>")
-```
-Fix 🔴 HIGH severity issues. Address 🟠 MEDIUM where practical.
-
-### 3. For complex logic — get the full checklist
-```
-get_checklist()
-```
-Run all 5 mental passes before marking done.
-
-### 4. Pre-write validation (before writing to disk)
-```
-check_drift(code="<your code snippet>", language="typescript")
-```
-
-## Severity guide
-
-| Icon | Level | Action |
-|---|---|---|
-| 🔴 | Critical/High | Fix immediately — do not proceed |
-| 🟠 | Medium | Fix if the refactor is safe |
-| 🔵 | Low/Info | Note for future cleanup |
+In your summary, list what you ran and what you fixed, and say plainly if a check
+could not run.

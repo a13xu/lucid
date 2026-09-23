@@ -6,16 +6,8 @@ import {
   handleGetRecent, GetRecentSchema,
 } from "../tools/context.js";
 import { handleSmartContext, SmartContextSchema } from "../tools/smart-context.js";
-import { handleSuggestModel, SuggestModelSchema } from "../tools/model-advisor.js";
 import { handleCompressText, CompressTextSchema } from "../tools/compress.js";
 import { tx, type RegistryCtx, type ToolMap, type ToolReturn } from "./shared.js";
-
-const suggestModelOutputShape = {
-  model: z.enum(["haiku", "sonnet"]),
-  model_id: z.string(),
-  reasoning: z.string(),
-  context_budget: z.number().int(),
-} as const;
 
 const compressTextOutputShape = {
   compressed: z.string(),
@@ -28,11 +20,6 @@ const compressTextOutputShape = {
 
 export function registerRetrievalTools(server: McpServer, ctx: RegistryCtx): ToolMap {
   const { stmts } = ctx;
-
-  const suggestModelRich = (args: z.infer<typeof SuggestModelSchema>): ToolReturn => {
-    const text = handleSuggestModel(args);
-    return { text, structured: JSON.parse(text) as Record<string, unknown> };
-  };
 
   const compressTextRich = async (args: z.infer<typeof CompressTextSchema>): Promise<ToolReturn> => {
     const text = await handleCompressText(args);
@@ -62,15 +49,6 @@ export function registerRetrievalTools(server: McpServer, ctx: RegistryCtx): Too
         "task_type adjusts token budget: simple=2000, moderate=6000, complex=12000.",
       inputSchema: SmartContextSchema.shape,
     }, tx("smart_context", async (args) => handleSmartContext(stmts, args))),
-
-    suggest_model: server.registerTool("suggest_model", {
-      title: "Suggest Model",
-      description:
-        "Classify task complexity → recommend Claude model. Returns { model, model_id, reasoning, context_budget }. " +
-        "Call at the start of any workflow.",
-      inputSchema: SuggestModelSchema.shape,
-      outputSchema: suggestModelOutputShape,
-    }, tx("suggest_model", (args) => suggestModelRich(args))),
 
     compress_text: server.registerTool("compress_text", {
       title: "Compress Text",

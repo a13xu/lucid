@@ -25,15 +25,23 @@ export function handleSessionStatus(
     return formatSession(row, true);
   }
 
+  const { COMPACT_HINT_AT, COMPACT_HINT_EVERY, CLEAR_HINT_AT, CACHE_STALE_SECONDS } = SESSION_TUNABLES;
+  const compactDesc = COMPACT_HINT_AT === null
+    ? "off (set LUCID_COMPACT_HINT_AT to enable)"
+    : `at ${COMPACT_HINT_AT} prompts, re-emitted every ${COMPACT_HINT_EVERY}`;
+  const clearDesc = CLEAR_HINT_AT === null
+    ? "off (set LUCID_CLEAR_HINT_AT to enable)"
+    : `at ${CLEAR_HINT_AT} prompts, one-shot`;
+
   const recent = stmts.recentCliSessions.all(limit);
   if (recent.length === 0) {
     return [
       `No Claude Code sessions tracked yet.`,
       ``,
-      `Hints fire at:`,
-      `  /compact at ${SESSION_TUNABLES.COMPACT_HINT_AT} prompts (re-emitted every ${SESSION_TUNABLES.COMPACT_HINT_EVERY})`,
-      `  /clear   at ${SESSION_TUNABLES.CLEAR_HINT_AT} prompts (one-shot)`,
-      `  cache-cold after ${SESSION_TUNABLES.CACHE_STALE_SECONDS}s idle`,
+      `Hints:`,
+      `  /compact  ${compactDesc}`,
+      `  /clear    ${clearDesc}`,
+      `  cache-cold after ${CACHE_STALE_SECONDS}s idle`,
     ].join("\n");
   }
 
@@ -43,17 +51,17 @@ export function handleSessionStatus(
   ];
   for (const r of recent) lines.push(formatSession(r, false));
   lines.push(``);
-  lines.push(`Thresholds: /compact@${SESSION_TUNABLES.COMPACT_HINT_AT} (+${SESSION_TUNABLES.COMPACT_HINT_EVERY}), ` +
-             `/clear@${SESSION_TUNABLES.CLEAR_HINT_AT}, cache-cold>${SESSION_TUNABLES.CACHE_STALE_SECONDS}s`);
+  lines.push(`Hints: /compact ${compactDesc}; /clear ${clearDesc}; cache-cold>${CACHE_STALE_SECONDS}s`);
   return lines.join("\n");
 }
 
 function formatSession(r: import("../database.js").CliSessionRow, full: boolean): string {
   const idle = Math.floor(Date.now() / 1000) - r.last_activity_at;
   const idleStr = idle < 60 ? `${idle}s` : idle < 3600 ? `${Math.round(idle / 60)}m` : `${Math.round(idle / 3600)}h`;
+  const { COMPACT_HINT_AT, CLEAR_HINT_AT } = SESSION_TUNABLES;
   const status =
-    r.prompt_count >= SESSION_TUNABLES.CLEAR_HINT_AT  ? "🔴" :
-    r.prompt_count >= SESSION_TUNABLES.COMPACT_HINT_AT ? "🟠" : "🟢";
+    CLEAR_HINT_AT !== null && r.prompt_count >= CLEAR_HINT_AT ? "🔴" :
+    COMPACT_HINT_AT !== null && r.prompt_count >= COMPACT_HINT_AT ? "🟠" : "🟢";
 
   const head = `${status} ${r.session_id.slice(0, 8)}…  ${r.prompt_count} prompts  idle=${idleStr}  compacts=${r.compact_count}`;
   if (!full) return "  " + head;

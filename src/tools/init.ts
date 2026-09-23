@@ -55,7 +55,11 @@ interface HookEntry {
   command?: string;
 }
 
-const LUCID_MARKER = "Lucid: call sync_file";
+// Old installs carried an `|| echo 'Lucid: call sync_file…'` fallback; the echo was
+// dead weight (PostToolUse stdout on exit 0 never reaches the model), but its text
+// still identifies those installs, so both markers count as "already installed".
+const LUCID_MARKER = "lucid-sync-hook";
+const LUCID_LEGACY_MARKER = "Lucid: call sync_file";
 const LUCID_UPDATE_MARKER = "lucid-update-check";
 const LUCID_GUARD_MARKER = "lucid-guard-pre-edit";
 const LUCID_SESSION_TICK_MARKER = "lucid-session-tick";
@@ -66,7 +70,7 @@ const LUCID_HOOK: HookEntry = {
   hooks: [
     {
       type: "command",
-      command: `lucid-sync 2>/dev/null || echo '🔄 ${LUCID_MARKER}(path) — install lucid globally: npm i -g @a13xu/lucid'`,
+      command: `lucid-sync # ${LUCID_MARKER}`,
     },
   ],
 };
@@ -146,11 +150,11 @@ function installHooks(dir: string): { installed: boolean; reason: string } {
   const hooks = (settings["hooks"] ?? {}) as Record<string, HookEntry[]>;
   let changed = false;
 
-  // ── PostToolUse: sync_file reminder ──────────────────────────────────────
+  // ── PostToolUse: lucid-sync indexes each edited file ─────────────────────
   const postToolUse: HookEntry[] = hooks["PostToolUse"] ?? [];
   const syncAlreadyInstalled = postToolUse.some((h) => {
     const cmd = h.command ?? h.hooks?.[0]?.command ?? "";
-    return cmd.includes(LUCID_MARKER);
+    return cmd.includes(LUCID_MARKER) || cmd.includes(LUCID_LEGACY_MARKER);
   });
   if (!syncAlreadyInstalled) {
     hooks["PostToolUse"] = [...postToolUse, LUCID_HOOK];
@@ -216,65 +220,67 @@ function installHooks(dir: string): { installed: boolean; reason: string } {
 // Adaugă instrucțiune în CLAUDE.md
 // ---------------------------------------------------------------------------
 
+// Read by current Claude models on every session, which follow instructions
+// literally: plain language, the reason next to each rule, and nothing a hook
+// already does deterministically (the old "you MUST call sync_file" line cost a
+// tool call per edit that lucid-sync was already making).
+const LUCID_BLOCK_START = "<!-- LUCID_SYNC -->";
+const LUCID_BLOCK_END = "<!-- /LUCID_SYNC -->";
+
 const LUCID_SYNC_INSTRUCTION = `
-<!-- LUCID_SYNC -->
-## 🔄 Lucid — Auto-sync after file changes
+${LUCID_BLOCK_START}
+## Lucid
 
-After EVERY Write, Edit, or NotebookEdit tool call, you MUST immediately call:
-\`\`\`
-sync_file(path="<path of the file you just wrote/edited>")
-\`\`\`
+**Index sync.** Edits made with Write/Edit/NotebookEdit are synced into Lucid's index
+automatically by the \`lucid-sync\` PostToolUse hook. Changes made any other way —
+\`git pull\`, codegen, edits through Bash — are not; call \`sync_project()\` after those.
 
-This keeps the Lucid knowledge graph up to date with the latest code.
-If multiple files changed (refactor, git pull), call sync_project() instead.
+**Backup and truncate guard.** A PreToolUse hook (\`lucid guard pre-edit\`) snapshots each
+file before Write/Edit/NotebookEdit (last 10 versions kept) and blocks destructive
+truncates: an empty or whitespace-only overwrite, a shrink of more than 70%, or two
+truncate attempts within 60 s. \`restore_file(path, version=1, dry_run=true)\` previews
+a restore; \`backup_file(path)\` snapshots by hand before a risky refactor. If a block is
+wrong — you really do mean to empty the file — set \`LUCID_TRUNCATE_OVERRIDE=1\` for that
+one invocation, or run \`lucid guard clear\` to release a cascade lock. Leave the hook
+installed: it is the only thing between an autonomous loop and a wiped file.
 
-## 🛡️  Lucid — Backup & Truncate Guard (automatic)
-
-A PreToolUse hook (\`lucid guard pre-edit\`) runs before every Write/Edit/MultiEdit:
-1. **Snapshot** the file into the versioned backup store (last 10 versions kept).
-2. **Block** destructive truncates: empty/whitespace overwrite, >70% shrink, or
-   ≥2 truncate attempts within 60s (cascade lock — common in autonomous loops).
-
-Tools available when you need them:
-- \`backup_file(path)\` — manual snapshot before risky refactors.
-- \`restore_file(path, version=1, dry_run=true)\` — preview/restore from backup.
-- \`check_truncate_risk(path, new_content)\` — assess a planned write.
-
-If a guard blocks legitimately (e.g. you really do want to empty a file), set
-\`LUCID_TRUNCATE_OVERRIDE=1\` for that one invocation, or run
-\`lucid guard clear\` to release a cascade lock. Do **not** disable the hook.
-
-## 💸  Lucid — Session-cost hints (/compact, /clear)
-
-Two hooks track session length to keep per-turn cost predictable:
-
-- **UserPromptSubmit** runs \`lucid session tick\` and may inject one or more of:
-  - \`/compact\` hint at **15 prompts**, re-emitted every **10** afterwards.
-  - \`/clear\` hint at **30 prompts** (one-shot — preferable when switching tasks).
-  - Cache-cold hint when idle gap exceeds **5 min** (prompt cache TTL).
-- **PreCompact** runs \`lucid session compact\` to reset the per-session counter
-  so the next hint cycle starts from a clean baseline.
-
-When you see a hint, surface it to the user and act on it — the cost model is
-per-turn linear with transcript length even when the cache is warm. Tools:
-- \`session_status\` — inspect prompt counts and pending hints.
-- \`lucid session reset\` — manually reset a single session counter (CLI).
-
-Tunable via env: \`LUCID_COMPACT_HINT_AT\`, \`LUCID_COMPACT_HINT_EVERY\`,
-\`LUCID_CLEAR_HINT_AT\`, \`LUCID_CACHE_STALE_SECONDS\`,
-\`LUCID_SESSION_HINTS_DISABLED=1\` to silence completely.
-<!-- /LUCID_SYNC -->
+**Session-cost hints.** A UserPromptSubmit hook (\`lucid session tick\`) notes when the
+prompt cache has likely expired after an idle gap (and, if enabled, suggests \`/compact\`
+or \`/clear\` as a session grows). Only the user can run those commands, so pass a hint on
+when it is relevant and let them decide.
+${LUCID_BLOCK_END}
 `;
 
-function injectClaudeMdInstruction(dir: string): boolean {
+function normalizeEol(text: string): string {
+  return text.replace(/\r\n/g, "\n");
+}
+
+/**
+ * Appends the Lucid block to the project's CLAUDE.md, or refreshes it in place
+ * when an older version is present, so wording fixes reach projects that ran
+ * init_project before them. Text outside the markers is never touched.
+ */
+export function injectClaudeMdInstruction(dir: string): "injected" | "updated" | null {
   const claudeMdPath = join(dir, "CLAUDE.md");
-  if (!existsSync(claudeMdPath)) return false;
+  if (!existsSync(claudeMdPath)) return null;
 
   const content = readFileSync(claudeMdPath, "utf-8");
-  if (content.includes("LUCID_SYNC")) return false; // already injected
+  const start = content.indexOf(LUCID_BLOCK_START);
+  if (start === -1) {
+    writeFileSync(claudeMdPath, content.trimEnd() + "\n" + LUCID_SYNC_INSTRUCTION, "utf-8");
+    return "injected";
+  }
 
-  writeFileSync(claudeMdPath, content.trimEnd() + "\n" + LUCID_SYNC_INSTRUCTION, "utf-8");
-  return true;
+  const endMarker = content.indexOf(LUCID_BLOCK_END, start);
+  if (endMarker === -1) return null; // unterminated block — leave a hand-edited file alone
+
+  const end = endMarker + LUCID_BLOCK_END.length;
+  const block = LUCID_SYNC_INSTRUCTION.trim();
+  // Compare modulo CRLF: an editor that rewrote line endings hasn't changed the text.
+  if (normalizeEol(content.slice(start, end)) === block) return null; // already current
+
+  writeFileSync(claudeMdPath, content.slice(0, start) + block + content.slice(end), "utf-8");
+  return "updated";
 }
 
 // ---------------------------------------------------------------------------
@@ -302,9 +308,9 @@ export async function handleInitProject(stmts: Statements, input: InitProjectInp
   const hookResult = installHooks(dir);
   if (hookResult.installed) {
     lines.push(`🔗 Claude Code hooks installed (.claude/settings.json)`);
-    lines.push(`   PreToolUse:       backup + truncate guard before every Write/Edit/MultiEdit`);
-    lines.push(`   PostToolUse:      reminder to call sync_file() after every Write/Edit`);
-    lines.push(`   UserPromptSubmit: session-cost hints (/compact at 15, /clear at 30, cache-cold)`);
+    lines.push(`   PreToolUse:       backup + truncate guard before every Write/Edit/NotebookEdit`);
+    lines.push(`   PostToolUse:      lucid-sync indexes each file after Write/Edit/NotebookEdit`);
+    lines.push(`   UserPromptSubmit: session-cost hints (cache-cold after idle; /compact, /clear opt-in)`);
     lines.push(`   PreCompact:       reset session counters when /compact fires`);
     lines.push(`   SessionStart:     auto-check for Lucid updates on session start`);
   } else {
@@ -319,7 +325,11 @@ export async function handleInitProject(stmts: Statements, input: InitProjectInp
       lines.push(`   • /${s}`);
     }
     lines.push(`   Invoke with /<skill-name> in Claude Code.`);
-  } else if (skillsResult.skipped.length > 0) {
+  }
+  if (skillsResult.updated.length > 0) {
+    lines.push(`📚 Skills updated (previous copy kept as SKILL.md.bak): ${skillsResult.updated.map((s) => "/" + s).join(", ")}`);
+  }
+  if (skillsResult.installed.length === 0 && skillsResult.updated.length === 0 && skillsResult.skipped.length > 0) {
     lines.push(`📚 Skills: already installed (${skillsResult.skipped.length} skill(s))`);
   }
 
@@ -330,14 +340,20 @@ export async function handleInitProject(stmts: Statements, input: InitProjectInp
     for (const s of globalSkillsResult.installed) {
       lines.push(`   • /${s} (available in all projects)`);
     }
-  } else if (globalSkillsResult.skipped.length > 0) {
+  }
+  if (globalSkillsResult.updated.length > 0) {
+    lines.push(`🌐 Global skills updated (previous copy kept as SKILL.md.bak): ${globalSkillsResult.updated.map((s) => "/" + s).join(", ")}`);
+  }
+  if (globalSkillsResult.installed.length === 0 && globalSkillsResult.updated.length === 0 && globalSkillsResult.skipped.length > 0) {
     lines.push(`🌐 Global skills: already installed (${globalSkillsResult.skipped.length} skill(s))`);
   }
 
   // ── CLAUDE.md injection ───────────────────────────────────────────────────
   const injected = injectClaudeMdInstruction(dir);
-  if (injected) {
-    lines.push(`📋 CLAUDE.md updated with sync_file() instruction`);
+  if (injected === "injected") {
+    lines.push(`📋 CLAUDE.md: Lucid section added`);
+  } else if (injected === "updated") {
+    lines.push(`📋 CLAUDE.md: Lucid section refreshed to the current version`);
   }
 
   // ── Security admin configuration ──────────────────────────────────────────
@@ -446,12 +462,13 @@ const PACKAGE_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "../..")
 
 interface SkillInstallResult {
   installed: string[];
+  updated: string[];
   skipped: string[];
 }
 
-function installSkills(projectDir: string): SkillInstallResult {
+export function installSkills(projectDir: string): SkillInstallResult {
   const skillsSource = join(PACKAGE_ROOT, "skills");
-  const result: SkillInstallResult = { installed: [], skipped: [] };
+  const result: SkillInstallResult = { installed: [], updated: [], skipped: [] };
 
   if (!existsSync(skillsSource)) return result;
 
@@ -466,13 +483,25 @@ function installSkills(projectDir: string): SkillInstallResult {
     const destDir = join(projectDir, ".claude", "skills", skillName);
     const destFile = join(destDir, "SKILL.md");
 
+    const shipped = readFileSync(srcSkillMd, "utf-8");
+
+    // An installed copy that differs from the shipped one is refreshed, or skill
+    // fixes would never reach anyone who installed an earlier version. The old
+    // copy is kept as SKILL.md.bak so local edits are recoverable.
     if (existsSync(destFile)) {
-      result.skipped.push(skillName);
+      const current = readFileSync(destFile, "utf-8");
+      if (normalizeEol(current) === normalizeEol(shipped)) {
+        result.skipped.push(skillName);
+        continue;
+      }
+      writeFileSync(destFile + ".bak", current, "utf-8");
+      writeFileSync(destFile, shipped, "utf-8");
+      result.updated.push(skillName);
       continue;
     }
 
     mkdirSync(destDir, { recursive: true });
-    writeFileSync(destFile, readFileSync(srcSkillMd, "utf-8"), "utf-8");
+    writeFileSync(destFile, shipped, "utf-8");
     result.installed.push(skillName);
   }
 

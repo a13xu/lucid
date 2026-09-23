@@ -4,7 +4,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/@a13xu/lucid)](https://www.npmjs.com/package/@a13xu/lucid)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> **MCP server for Claude Code** — persistent memory, smart code indexing, model selection, and code quality validation. Works out of the box with zero configuration.
+> **MCP server for Claude Code** — persistent memory, smart code indexing, development plans, and code quality validation. Works out of the box with zero configuration.
 
 Token-efficient memory, code indexing, and validation for Claude Code agents — backed by **SQLite + FTS5**.
 
@@ -30,9 +30,18 @@ lucid setup statusline
 ```
 
 Installs a Claude Code status line showing the model, remaining 5h/weekly quota,
-knowledge-graph size, and the progress of the active plan **for the project you
-are in**, plus a `/tasks` command that expands it into the full task list. It
-writes `lucid-statusline.mjs`, `lucid-tasks.mjs`, and `commands/tasks.md` into
+context-window usage, knowledge-graph size, and the progress of the active plan
+**for the project you are in**, plus a `/tasks` command (`/tasks --all` includes
+completed plans) that expands it into the full task list.
+
+- **Quota** is read from the `rate_limits` field Claude Code ≥ 2.1.251 pipes on
+  stdin — no network, no token access. The OAuth usage endpoint is only used for
+  per-model weekly caps (e.g. `Fable 96%`) and as the fallback on older versions.
+- **`🪟 ctx N%`** shows context-window usage and adds `⚠` from 85%, where
+  auto-compact fires. Omitted when Claude Code does not report it.
+- **`👁 watch`** appears only while the `lucid watch` daemon is running.
+
+The command writes `lucid-statusline.mjs`, `lucid-tasks.mjs`, and `commands/tasks.md` into
 `~/.claude/` and registers `statusLine` in `~/.claude/settings.json`, preserving
 every other setting and backing the file up first. Safe to re-run.
 
@@ -59,15 +68,14 @@ Default DB path: `~/.claude/memory.db`
 
 ```
 1. "Index this project" → init_project()               → scans CLAUDE.md, package.json, src/**
-2. Write code           → sync_file(path)               → compressed + hashed + diff stored
+2. Write code           → lucid-sync hook (automatic)   → compressed + hashed + diff stored
 3. "What's relevant?"  → smart_context("auth flow")    → recall + code in one call, adaptive budget
-4. "What model?"       → suggest_model("refactor auth") → haiku (lookup) or sonnet (reasoning)
-5. "What changed?"     → get_recent(hours=2)            → line diffs of recent edits
-6. "Where is X used?"  → grep_code("X")                → matching lines only, ~30 tokens
-7. "What do we know?"  → recall("query")               → knowledge graph search
+4. "What changed?"     → get_recent(hours=2)            → line diffs of recent edits
+5. "Where is X used?"  → grep_code("X")                → matching lines only, ~30 tokens
+6. "What do we know?"  → recall("query")               → knowledge graph search
 ```
 
-## Tools (40)
+## Tools (50)
 
 ### Memory
 | Tool | Description |
@@ -82,7 +90,7 @@ Default DB path: `~/.claude/memory.db`
 ### Code indexing
 | Tool | Description |
 |---|---|
-| `init_project` | Scan project directory recursively and bootstrap knowledge graph. Reads `CLAUDE.md`, `package.json`/`pyproject.toml`, `README.md`, `.mcp.json`, `logic-guardian.yaml`, all source files. Installs a Claude Code hook for auto-sync. |
+| `init_project` | Scan project directory recursively and bootstrap knowledge graph. Reads `CLAUDE.md`, `package.json`/`pyproject.toml`, `README.md`, `.mcp.json`, `logic-guardian.yaml`, all source files. Installs Claude Code hooks: `PreToolUse` backup + truncate guard and `PostToolUse` auto-sync (matcher `Write\|Edit\|NotebookEdit`). |
 | `sync_file` | Index or re-index a single file after writing/editing. Stores compressed binary (zlib-9), skips instantly if SHA-256 hash unchanged. Stores line-level diff from previous version. |
 | `sync_project` | Re-index entire project incrementally. Reports compression ratio. |
 | `grep_code` | Regex search across all indexed files. Decompresses binary on-the-fly, returns only matching lines with context — ~20-50 tokens vs reading full files. |
@@ -91,7 +99,6 @@ Default DB path: `~/.claude/memory.db`
 | Tool | Description |
 |---|---|
 | `smart_context` | **Recommended entry point.** Combines `recall()` (knowledge graph) + `get_context()` (code files) in one call. Adaptive token budget: `simple`=2000, `moderate`=6000, `complex`=12000. Logs an experience for `reward()`/`penalize()` feedback. |
-| `suggest_model` | Classify task complexity → recommend Claude model. Returns `{ model, model_id, reasoning, context_budget }`. Simple lookups → Haiku; reasoning/code → Sonnet. Call at the start of any workflow. |
 | `get_context` | **Classic code context.** Ranks indexed files by TF-IDF (or Qdrant), applies recency boost, returns skeletons for large files. Respects `maxContextTokens` budget. |
 | `get_recent` | Return files modified in the last N hours with line-level diffs. |
 | `compress_text` | Compress any text using LLMLingua-2 semantic compression. Returns compressed text + stats (ratio, tokens saved). Model downloads ~700MB on first use. |
@@ -374,25 +381,22 @@ lucid stop
 
 This keeps the knowledge graph current automatically — without relying on Claude remembering to call `sync_file`.
 
-## Skills enforcement
+## Skills
 
-Lucid ships **enforcement skills** that install globally into `~/.claude/skills/` and activate in every project:
+Lucid ships workflow skills that `init_project` installs into the project's `.claude/skills/` and globally into `~/.claude/skills/`:
 
 | Skill | Purpose |
 |---|---|
-| `lucid-start` | Session start — `get_recent` + `smart_context` before any coding |
-| `lucid-context` | Pre-task context loading — `suggest_model` + `smart_context` |
-| `lucid-audit` | Pre-done gate — validate + check drift before marking complete |
-| `lucid-plan` | Planning workflow |
-| `lucid-sync` | Post-edit sync reminder |
-| `lucid-webdev` | Web dev workflow with context |
+| `lucid-start` | Session start — `get_recent` + `smart_context` for the task |
+| `lucid-context` | Ranked context for a task via `smart_context`, with `reward`/`penalize` feedback |
+| `lucid-audit` | Before calling work done — `validate_file` + `check_code_quality` on changed files |
+| `lucid-plan` | Persisted plans with tasks and test criteria (drives the status bar) |
+| `lucid-security` | Security scan + drift check for input, auth, and external-data code |
+| `lucid-webdev` | Web dev generators and audits (enables the `webdev` toolset) |
 
-All skills use `<HARD-GATE>` blocks that prevent proceeding until required tools are called.
+The skills are written for current Claude models: plain instructions with the reason for each step, no shouted gates. Anything that must happen every time (index sync, backup + truncate guard) is done by hooks, not by skill text.
 
-Install globally:
-```bash
-init_project()   # installs skills to ~/.claude/skills/ automatically
-```
+Re-running `init_project()` refreshes installed skills that differ from the shipped version and keeps the previous copy as `SKILL.md.bak`. It likewise refreshes the Lucid section it adds to the project's `CLAUDE.md` (between the `LUCID_SYNC` markers), leaving the rest of the file untouched.
 
 ## Debugging
 
@@ -410,6 +414,7 @@ Bug reports and pull requests are welcome on [GitHub](https://github.com/a13xu/l
 1. Fork the repo
 2. `npm install` → `npm run build`
 3. Test locally: `claude mcp add --transport stdio lucid-dev -- node /path/to/lucid/build/index.js`
+   (`.mcp.json` is gitignored — keep your absolute-path config local; a committed placeholder copy shadows the real registration and kills the server at boot with `CONNECTION_CLOSED`)
 4. Open a PR
 
 ## Tech stack

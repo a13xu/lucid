@@ -1,9 +1,8 @@
 ---
 name: lucid-context
-description: Use BEFORE starting any coding task — retrieves relevant context via smart_context (code + knowledge graph). HARD-GATE: do not read files manually before calling smart_context.
+description: Load the code and knowledge relevant to a task through Lucid's ranked retrieval (smart_context) instead of broad file searches. Use before working in an unfamiliar part of a Lucid-indexed codebase.
 argument-hint: "[what you are working on]"
 allowed-tools:
-  - mcp__lucid__suggest_model
   - mcp__lucid__smart_context
   - mcp__lucid__get_context
   - mcp__lucid__get_recent
@@ -13,66 +12,26 @@ allowed-tools:
   - mcp__lucid__penalize
 ---
 
-<HARD-GATE>
-Do NOT open any source file, read any code, or start implementation
-until you have called smart_context and reviewed the result.
-Reading files manually when Lucid is available wastes tokens and misses context.
-</HARD-GATE>
+`smart_context` combines TF-IDF ranking, recency, reward signals, and skeleton pruning, so
+one call usually returns what several searches and full-file reads would, in fewer
+tokens. When you already know the exact file or symbol, read it directly instead.
 
-## When to invoke this skill
+## Retrieve
 
-**INVOKE when:** about to work on a feature, fix a bug, understand a module, or any coding task
-**DO NOT INVOKE for:** pure conversation, reading docs, non-code questions
-
-## Steps
-
-```dot
-digraph lucid_context {
-    "Describe task" -> "suggest_model";
-    "suggest_model" -> "call smart_context";
-    "call smart_context" -> "Result relevant?";
-    "Result relevant?" -> "call reward()" [label="yes"];
-    "Result relevant?" -> "call penalize()" [label="no — note what was missing"];
-    "reward()" -> "Start coding";
-    "penalize()" -> "Start coding";
-}
+```
+smart_context(query="<what you are working on>", task_type="moderate")
+smart_context(query="...", dirs=["src/api"], task_type="simple")   # narrower, cheaper
 ```
 
-### 0. Get model recommendation
-```
-suggest_model(task_description="<concise description of what you are working on>")
-```
-Say: **"Using [model] — [reasoning]"**
+For follow-ups: `grep_code(pattern)` for a symbol's usages, `recall(query)` for what
+earlier sessions recorded, `get_recent(hours=2)` after a pull.
 
-### 1. Call smart_context
-```
-smart_context(query="<concise description of what you are working on>", task_type="moderate")
-```
+## Give feedback
 
-Use `dirs` to narrow scope and `task_type` to adjust budget:
-```
-smart_context(query="...", dirs=["src/api"], task_type="simple")
-```
+Ranking learns from feedback; without it the same misses repeat.
 
-### 2. Review results and give feedback
-
-| Result quality | Action |
+| Result | Call |
 |---|---|
-| Included the files you needed | `reward()` |
-| Missed important files you had to find manually | `penalize(note="missed: src/path/file.ts")` |
-| Partially useful | no action |
-
-### 3. Supplement if needed
-
-```
-grep_code(pattern="functionName")          # locate specific usages
-get_recent(hours=2)                        # after git pull — see what changed
-recall(query="<topic>")                    # search accumulated knowledge
-```
-
-### 4. After finishing — sync
-
-After every Write/Edit:
-```
-sync_file(path="<modified file>")
-```
+| It included the files you needed | `reward()` |
+| You had to find important files yourself | `penalize(note="missed: src/path/file.ts")` |
+| Partly useful | nothing |

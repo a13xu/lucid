@@ -1,9 +1,8 @@
 ---
 name: lucid-security
-description: Run before merging any code that handles user input, auth, or external data — security scan + drift check for injection, XSS, and credential exposure.
+description: Security scan plus drift check for code that handles user input, auth, external data, files, or shell commands — injection, XSS, and credential exposure. Use before merging such code.
 argument-hint: "[file path or directory]"
 allowed-tools:
-  - mcp__lucid__suggest_model
   - mcp__lucid__security_scan
   - mcp__lucid__check_drift
   - mcp__lucid__validate_file
@@ -13,38 +12,18 @@ allowed-tools:
   - Glob
 ---
 
-<HARD-GATE>
-Before merging code that:
-- Handles user input (forms, query params, file uploads)
-- Implements auth, tokens, sessions, or permissions
-- Calls external APIs or parses external data
-- Manages files or runs shell commands
+Run this on code that handles user input (forms, query params, uploads); implements
+auth, tokens, sessions, or permissions; calls external APIs or parses external data; or
+touches files or shell commands. Those are the paths where a small mistake becomes an
+exploitable one.
 
-Run this skill. No exceptions.
-</HARD-GATE>
-
-## Steps
-
-### 0. Get model recommendation
-```
-suggest_model(task_description="<paste the user's task description>")
-```
-Say: **"Using [model] — [reasoning]"** then proceed.
-
-### 1. Security scan
-```
-security_scan(code="<file contents or snippet>", language="typescript", context="backend")
-```
-
-### 2. Drift check for security-sensitive snippets
-```
-check_drift(code="<auth/input-handling code>", language="typescript")
-```
-
-### 3. Fix all CRITICAL issues before merging
+1. `security_scan(code, language, context)`, where `context` is e.g. `"backend"` or
+   `"frontend"`.
+2. `check_drift(code, language)` on the auth and input-handling parts.
+3. Act on severity:
 
 | Severity | Action |
 |---|---|
-| 🔴 CRITICAL | Block merge — fix immediately |
-| 🟠 HIGH | Fix before merge |
-| 🔵 MEDIUM/LOW | Track, fix in follow-up |
+| 🔴 Critical | Fix before merging |
+| 🟠 High | Fix before merging |
+| 🔵 Medium / low | Track and fix in a follow-up |

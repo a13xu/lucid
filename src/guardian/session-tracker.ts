@@ -1,14 +1,18 @@
 /**
- * Session Tracker — emits hints to invoke /compact or /clear when a Claude Code
- * session grows expensive. Driven by UserPromptSubmit and PreCompact hooks.
+ * Session Tracker — emits session-cost hints into a Claude Code session.
+ * Driven by UserPromptSubmit and PreCompact hooks.
  *
- * Cost model: Anthropic prompt cache has a 5-minute TTL. Beyond that the next
- * turn re-reads the entire transcript. Long sessions also pay per-turn linearly
- * with transcript length even when warm. Two pressures, two hints:
+ *   1) idle > CACHE_STALE_SECONDS       → cache cold; the next turn re-bills it.  (default on)
+ *   2) prompt_count >= COMPACT_HINT_AT  → suggest /compact (re-emitted every N).  (opt-in)
+ *   3) prompt_count >= CLEAR_HINT_AT    → suggest /clear  (one-shot).             (opt-in)
  *
- *   1) prompt_count >= COMPACT_HINT_AT  → suggest /compact (re-emitted every N).
- *   2) prompt_count >= CLEAR_HINT_AT    → suggest /clear  (one-shot).
- *   3) idle > CACHE_STALE_SECONDS       → cache cold; warn next turn re-bills.
+ * The prompt-count hints are off unless their env var is set. A prompt count
+ * says nothing about context size on 1M-token models: Claude Code auto-compacts
+ * near the window limit and the status bar's ctx segment shows real usage, so a
+ * fixed "/compact at 15 prompts" only pushed sessions to throw away context early.
+ *
+ * Cache TTL defaults to 1 h — what Claude Code sessions on a subscription get.
+ * API-key sessions on the 5-minute cache set LUCID_CACHE_STALE_SECONDS=300.
  *
  * Emitted hints are written to STDOUT so the UserPromptSubmit hook injects them
  * into Claude's context (Claude Code convention). Empty stdout = no hint.
@@ -16,17 +20,18 @@
 
 import type { Statements } from "../database.js";
 
-const num = (envKey: string, fallback: number): number => {
+/** Positive number from env, or null when unset/invalid. */
+const optNum = (envKey: string): number | null => {
   const v = process.env[envKey];
-  if (!v) return fallback;
+  if (!v) return null;
   const n = Number(v);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
+  return Number.isFinite(n) && n > 0 ? n : null;
 };
 
-const COMPACT_HINT_AT     = num("LUCID_COMPACT_HINT_AT",     15);
-const COMPACT_HINT_EVERY  = num("LUCID_COMPACT_HINT_EVERY",  10);
-const CLEAR_HINT_AT       = num("LUCID_CLEAR_HINT_AT",       30);
-const CACHE_STALE_SECONDS = num("LUCID_CACHE_STALE_SECONDS", 300);
+const COMPACT_HINT_AT     = optNum("LUCID_COMPACT_HINT_AT");
+const COMPACT_HINT_EVERY  = optNum("LUCID_COMPACT_HINT_EVERY") ?? 10;
+const CLEAR_HINT_AT       = optNum("LUCID_CLEAR_HINT_AT");
+const CACHE_STALE_SECONDS = optNum("LUCID_CACHE_STALE_SECONDS") ?? 3600;
 /** Below this many prompts, idle gaps don't matter — short session, cheap. */
 const IDLE_HINT_MIN_PROMPTS = 5;
 
@@ -65,16 +70,17 @@ export function tickSession(
 
   // ── /compact hint: at threshold, then every N prompts after ────────────────
   const compactDue =
-    newCount === COMPACT_HINT_AT ||
-    (newCount > COMPACT_HINT_AT &&
-     (newCount - COMPACT_HINT_AT) % COMPACT_HINT_EVERY === 0);
+    COMPACT_HINT_AT !== null &&
+    (newCount === COMPACT_HINT_AT ||
+     (newCount > COMPACT_HINT_AT &&
+      (newCount - COMPACT_HINT_AT) % COMPACT_HINT_EVERY === 0));
   if (compactDue) {
     hints.push(formatCompactHint(newCount, existing.compact_count));
     stmts.markCompactHint.run(now, sessionId);
   }
 
   // ── /clear hint: one-shot at CLEAR_HINT_AT ─────────────────────────────────
-  if (newCount >= CLEAR_HINT_AT && existing.last_clear_hint_at === null) {
+  if (CLEAR_HINT_AT !== null && newCount >= CLEAR_HINT_AT && existing.last_clear_hint_at === null) {
     hints.push(formatClearHint(newCount));
     stmts.markClearHint.run(now, sessionId);
   }
@@ -106,7 +112,7 @@ function formatCompactHint(promptCount: number, prevCompacts: number): string {
   return [
     `[Lucid · session-cost]`,
     `Session is at ${promptCount} prompts${tail}. Per-turn cost grows with transcript length even when cached.`,
-    `→ Run /compact mid-task to summarize earlier turns and reduce input tokens for the next ~${COMPACT_HINT_EVERY} prompts.`,
+    `The user may want /compact at the next natural task boundary.`,
   ].join(" ");
 }
 
@@ -114,7 +120,7 @@ function formatClearHint(promptCount: number): string {
   return [
     `[Lucid · session-cost]`,
     `Session has reached ${promptCount} prompts.`,
-    `→ If you are switching to a new task with little overlap, prefer /clear over /compact — fresh context is cheaper than a summary.`,
+    `If the user is switching to an unrelated task, /clear is cheaper than /compact — fresh context costs less than a summary.`,
   ].join(" ");
 }
 
@@ -122,8 +128,8 @@ function formatColdCacheHint(idleSeconds: number): string {
   const mins = Math.round(idleSeconds / 60);
   return [
     `[Lucid · session-cost]`,
-    `${mins}m idle: prompt cache (5-min TTL) is cold. This turn rebuilds it from scratch (~3-4× the cached cost).`,
-    `→ For long pauses, run /compact before resuming so the rebuilt cache covers a smaller transcript.`,
+    `${mins}m idle: the prompt cache (${Math.round(CACHE_STALE_SECONDS / 60)}-min TTL) has likely expired, so this turn re-reads the transcript at full price.`,
+    `If the session is long and the next task is unrelated, /clear avoids paying that again on every turn.`,
   ].join(" ");
 }
 

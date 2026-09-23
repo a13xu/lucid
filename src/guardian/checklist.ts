@@ -4,20 +4,25 @@ import { existsSync, readFileSync } from "fs";
 
 export const ORIGINAL_CHECKLIST = `# Logic Guardian — Validation Checklist (5 passes)
 
+Plausible-looking code is where drift hides, so these passes check behavior rather than
+appearance. Use them for intricate logic; for small, obvious changes, running the tests
+and \`validate_file\` is enough.
+
 ## Pass 1: Logic Trace
-Trace through the code with CONCRETE values:
-- Happy path   → real values, write each variable state
+Trace the code with concrete values:
+- Happy path   → real values, noting each variable's state
 - Empty/zero   → null, 0, "", []
 - Boundary     → first element, last element, max int, single char
 - Error case   → network down, file missing, permission denied
 
-STOP if any trace produces unexpected output. Fix before continuing.
+If a trace produces output you didn't expect, fix that before moving on — later passes
+assume the traces hold.
 
 ## Pass 2: Contract Verification
-- [ ] Preconditions: what must be true BEFORE this runs? Is it checked?
-- [ ] Postconditions: what must be true AFTER? Can you prove it?
-- [ ] Invariants: what must ALWAYS be true? Does the code maintain it?
-- [ ] Return type: does EVERY code path return the expected type?
+- [ ] Preconditions: what must be true before this runs? Is it checked?
+- [ ] Postconditions: what must be true after? Can you show it?
+- [ ] Invariants: what must always hold? Does the code maintain it?
+- [ ] Return type: does every code path return the expected type?
 - [ ] Side effects: are all side effects intentional?
 
 ## Pass 3: Stupid Mistakes Checklist
@@ -37,37 +42,36 @@ STOP if any trace produces unexpected output. Fix before continuing.
 - [ ] Integer vs Float division
 - [ ] Boolean coercion edge cases
 
-### Logic Inversions (THE #1 LLM drift pattern)
-- [ ] if/else — is the condition testing what you THINK?
-- [ ] Early returns — does the guard return the RIGHT value?
-- [ ] filter/find/some — keeping the RIGHT elements?
+### Logic Inversions (the most common drift pattern)
+- [ ] if/else — does the condition test what you intend?
+- [ ] Early returns — does the guard return the right value?
+- [ ] filter/find/some — are you keeping the right elements?
 - [ ] Error handling — catching and re-throwing correctly?
 
 ### State & Mutation
-- [ ] Mutating shared object when you should copy?
+- [ ] Mutating a shared object where a copy was needed?
 - [ ] Async state read after it might have changed?
 
 ### Copy-Paste Drift
-- [ ] ALL variable names updated in copied blocks?
-- [ ] Conditions changed, not just variable names?
+- [ ] Every variable name updated in copied blocks?
+- [ ] Conditions changed too, not just variable names?
 
 ## Pass 4: Integration Sanity
 - [ ] Breaks existing callers?
 - [ ] Imports/exports correct?
-- [ ] If async, all callers awaiting it?
-- [ ] If type changed, all usages updated?
+- [ ] If async, are all callers awaiting it?
+- [ ] If a type changed, are all usages updated?
 
-## Pass 5: Explain It Test
-In ONE sentence: what does this code do?
-If you can't explain it, or the sentence doesn't match the code → something is wrong.
+## Pass 5: Explain It
+In one sentence, what does this code do? If the sentence is hard to write, or doesn't
+match the code, look again.
 
-## Anti-Drift Triggers
-STOP if you find yourself thinking:
-- "This is similar to..." → You're pattern-matching. TRACE THE LOGIC.
-- "This should work because the other one does" → VERIFY INDEPENDENTLY.
-- "I'll just copy and change the names" → CHECK EVERY DIFFERENCE.
-- "The error handling is probably fine" → TRACE THE ERROR PATH.
-- "This is standard boilerplate" → Verify it fits this context.
+## Signs you're pattern-matching instead of reasoning
+- "This is similar to…" → trace this case's logic on its own.
+- "This should work because the other one does" → verify it independently.
+- "I'll copy it and change the names" → check every difference, operators included.
+- "The error handling is probably fine" → trace the error path.
+- "This is standard boilerplate" → confirm it fits this context.
 `;
 
 // Opt-in: if a pre-compressed copy exists at ~/.lucid/compressed-prompts/checklist.txt

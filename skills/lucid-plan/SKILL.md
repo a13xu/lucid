@@ -1,9 +1,8 @@
 ---
 name: lucid-plan
-description: MANDATORY before writing code for any non-trivial feature — creates a persisted plan with tasks. HARD-GATE: no coding without a plan.
+description: Create and track a persisted Lucid plan (tasks with test criteria) that survives session restarts and drives the status bar. Use when starting a feature or fix with three or more steps, or work that may span sessions.
 argument-hint: "[feature or task description]"
 allowed-tools:
-  - mcp__lucid__suggest_model
   - mcp__lucid__plan_create
   - mcp__lucid__plan_list
   - mcp__lucid__plan_get
@@ -16,24 +15,12 @@ allowed-tools:
   - mcp__lucid__remember
 ---
 
-<HARD-GATE>
-You are about to write code for a feature or fix.
-STOP. Create a plan first. Plans survive session restarts.
-Do NOT write implementation code until a plan exists and tasks are defined.
-</HARD-GATE>
-
-## When to invoke
-
-**INVOKE when:** implementing a feature, fixing a non-trivial bug, any task with 3+ steps
-**DO NOT INVOKE for:** single-line fixes, config changes, documentation-only tasks
+A plan persists in Lucid's database, so a later session (or the user, through the
+status bar and `/tasks`) can see what was intended, what is done, and what is stuck.
+Create one before implementing work with three or more steps; skip it for one-line
+fixes, config tweaks, and documentation-only changes.
 
 ## Steps
-
-### 0. Get model recommendation
-```
-suggest_model(task_description="<paste the user's task description>")
-```
-Say: **"Using [model] — [reasoning]"** then proceed.
 
 ### 1. Create the plan
 ```

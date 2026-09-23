@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Lucid** is an MCP (Model Context Protocol) server (`@a13xu/lucid`) that gives Claude Code persistent memory, intelligent code indexing, context retrieval, and LLM drift detection via ~45 MCP tools grouped into dynamic toolsets.
+**Lucid** is an MCP (Model Context Protocol) server (`@a13xu/lucid`) that gives Claude Code persistent memory, intelligent code indexing, context retrieval, and LLM drift detection via 50 MCP tools grouped into dynamic toolsets (35 visible by default).
 
 ## Commands
 
@@ -59,7 +59,7 @@ Claude Code → StdioServerTransport → guardRequest() [rate limit + WAF + SSRF
 | Module | Purpose |
 |--------|---------|
 | `src/database.ts` | Schema + all prepared statements |
-| `src/tools/init.ts` | `init_project` — scans CLAUDE.md, package.json, source files, installs PostToolUse hook |
+| `src/tools/init.ts` | `init_project` — scans CLAUDE.md, package.json, source files, installs PreToolUse (backup + truncate guard) and PostToolUse (sync) hooks, matcher `Write\|Edit\|NotebookEdit` (MultiEdit no longer exists — folded into Edit) |
 | `src/indexer/` | `file.ts` extracts exports/TODOs; `ast.ts` builds skeletons (signatures only, no bodies) — tree-sitter (`tree-sitter.ts` + `grammars.ts`, optional WASM) with regex fallback; `project.ts` recursive scan with mtime+size incremental shortcut |
 | `src/retrieval/context.ts` | `get_context` — TF-IDF ranking + recency boost + skeleton pruning to stay within token budget |
 | `src/retrieval/tfidf.ts` | TF-IDF computed on-the-fly across all indexed files |
@@ -69,6 +69,7 @@ Claude Code → StdioServerTransport → guardRequest() [rate limit + WAF + SSRF
 | `src/store/content.ts` | zlib compress/decompress + SHA256 hash |
 | `src/project.ts` | Project root + canonical scope key shared by every project-aware tool |
 | `src/setup/statusline.ts` | `lucid setup statusline` — renders `scripts/statusline/*` into `~/.claude/`, merges `statusLine` into settings.json (backs up first) |
+| `scripts/statusline/lucid-statusline.mjs` | Status bar template. Quota from stdin `rate_limits` (CC ≥ 2.1.251), OAuth endpoint only for model-scoped weekly caps + fallback; cache split `{core, scoped}`; `🪟 ctx` from `context_window.used_percentage`. Percent normalisation happens exactly once, at the call site that knows the source format |
 | `src/tools/plan.ts` | Plan CRUD, task status transitions, archive/delete/cleanup — all scoped to the current project |
 | `src/memory/experience.ts` | Reward/penalize signals, decay (half-life ~14 days) |
 
@@ -87,9 +88,28 @@ Claude Code → StdioServerTransport → guardRequest() [rate limit + WAF + SSRF
 - Relevant fragments extracted if skeleton still exceeds budget
 - `reward()`/`penalize()` update `file_rewards` cache to boost/suppress files in future queries
 
-**Sync hook auto-installation:** `init_project` writes a `PostToolUse` hook to `.claude/settings.json` that reminds Claude to call `sync_file(path)` after every file edit. This keeps the knowledge graph current.
+**`.mcp.json` is gitignored:** keep the real absolute-path config local. A committed placeholder copy shadows the parent registration for sessions started inside `lucid/` and kills the server at boot (`CONNECTION_CLOSED`).
+
+**Sync hook auto-installation:** `init_project` writes a `PostToolUse` hook to `.claude/settings.json` that runs `lucid-sync` (`src/lucid-sync.ts`) after every Write/Edit/NotebookEdit. It reads the hook JSON from stdin and syncs the file itself — daemon first, direct SQLite otherwise — so nobody has to call `sync_file` by hand. Edits made outside those tools (Bash, `git pull`) still need `sync_project()`.
+
+**Prompt text Lucid ships** — `skills/*/SKILL.md`, the `LUCID_SYNC` block `init_project` appends to a project's CLAUDE.md, and tool descriptions — is read by current Claude models, which follow instructions literally. Write it in plain language with the reason next to each rule, and enforce anything that must always happen in a hook rather than in prose.
 
 **Module system:** ES modules throughout (`"type": "module"` in package.json, `"module": "Node16"` in tsconfig). Use `.js` extensions in imports even for `.ts` source files.
+
+## Status bar
+
+`scripts/statusline/lucid-statusline.mjs` and `lucid-tasks.mjs` are templates with a `__LUCID_ROOT__` placeholder; `lucid setup statusline` renders them into `~/.claude/`, installs `commands/tasks.md`, and registers `statusLine` in `~/.claude/settings.json`. The installed files are generated — edit the templates. Segments degrade independently (a missing DB, module, token, or network drops only that segment):
+
+- **Quota (5h / 7d):** stdin `rate_limits` on Claude Code ≥ 2.1.251 — no network. The OAuth usage endpoint (`GET https://api.anthropic.com/api/oauth/usage`, token from `~/.claude/.credentials.json`, sent nowhere else) runs only for model-scoped weekly caps (`limits[]` kind `weekly_scoped`) and as the fallback on older versions. Cached 60 s in `~/.claude/lucid-quota-cache.json` as `{core, scoped}`, served stale up to 30 min on failure (429 is routine); `--debug-usage` bypasses the cache and dumps raw JSON to stderr.
+- **`🪟 ctx`:** stdin `context_window.used_percentage`, `⚠` from 85 % (auto-compact threshold).
+- **`📋` plan:** most recent active plan of the session's project, scoped by importing `resolveScope`/`isSameProject` from `build/project.js`; `/tasks` (`/tasks --all`) prints the full list.
+- **`👁 watch`:** only while the `lucid watch` daemon is alive (`~/.lucid/watch.pid` + signal 0).
+
+## Gotchas
+
+- **Releases:** npm has 2FA — `npm publish --otp=<code>`. Bump the version before committing on top of an already-published one.
+- **After a Node major upgrade**, run `npm rebuild better-sqlite3`; otherwise the MCP server and the status bar die with `NODE_MODULE_VERSION` mismatch.
+- **Schema drift:** the real `~/.claude/memory.db` has columns and tables no code here creates (`plans.instance_id`, `plan_tasks.is_e2e`, `playwright_*`, …). Migrations must be strictly additive, and new indexes on new columns go in `migrateSchema`, not `createSchema`.
 
 ## Environment Variables
 

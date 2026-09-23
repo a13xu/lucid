@@ -57,7 +57,7 @@ export function registerResources(server: McpServer, ctx: RegistryCtx): void {
 
   server.registerResource("checklist", "lucid://guardian/checklist", {
     title: "Logic Guardian Checklist",
-    description: "Full 5-pass validation checklist Claude must run before completing any task.",
+    description: "Full 5-pass Logic Guardian review checklist for intricate logic: traces, contracts, drift patterns, integration.",
     mimeType: "text/markdown",
   }, async (uri) => ({
     contents: [{ uri: uri.href, mimeType: "text/markdown", text: handleGetChecklist() }],

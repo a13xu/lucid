@@ -18,9 +18,11 @@ export function registerPlanTools(server: McpServer, ctx: RegistryCtx): ToolMap 
     plan_create: server.registerTool("plan_create", {
       title: "Plan Create",
       description:
-        "Create a plan with user story, ordered tasks, and test criteria. " +
-        "Call BEFORE writing any code to establish intent and acceptance criteria. " +
-        "The plan is stamped with the current project, so it stays out of other projects' lists.",
+        "Create a persisted plan with a user story, ordered tasks, and per-task test criteria. " +
+        "Use at the start of work with three or more steps or that may span sessions; skip it for " +
+        "one-line fixes. Returns the plan id and each task's real id (a database rowid) — use those " +
+        "ids with plan_update_task. The plan is stamped with the current project, so it stays out " +
+        "of other projects' lists; other active plans in this project are listed in the reply.",
       inputSchema: PlanCreateSchema.shape,
     }, tx("plan_create", (args) => handlePlanCreate(db, stmts, args))),
 
