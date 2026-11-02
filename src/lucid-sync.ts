@@ -29,8 +29,11 @@ interface HookInput {
 }
 
 function getFilePathFromStdin(): string | null {
+  // A manual `lucid-sync <path>` has a terminal on stdin; reading it would wait for EOF.
+  if (process.stdin.isTTY) return process.argv[2] ?? null;
   try {
-    const raw = readFileSync("/dev/stdin", "utf-8").trim();
+    // fd 0, not "/dev/stdin": that path doesn't exist on Windows.
+    const raw = readFileSync(0, "utf-8").trim();
     if (!raw) return process.argv[2] ?? null;
     const data = JSON.parse(raw) as HookInput;
     const ti = data.tool_input ?? {};

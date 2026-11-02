@@ -31,6 +31,9 @@ lucid setup grammars
 # One-time: install the Claude Code status line + /tasks command into ~/.claude/
 # → renders templates from scripts/statusline/ and registers statusLine
 lucid setup statusline
+
+# Optional: install the vendored Elephant-Goldfish Model (design + review skills) into ~/.claude/
+lucid setup egm
 ```
 
 TypeScript strict mode (`strict: true`) is the linter. Validate with Logic Guardian (`validate_file`, `check_drift`) after changes.
@@ -69,6 +72,7 @@ Claude Code → StdioServerTransport → guardRequest() [rate limit + WAF + SSRF
 | `src/store/content.ts` | zlib compress/decompress + SHA256 hash |
 | `src/project.ts` | Project root + canonical scope key shared by every project-aware tool |
 | `src/setup/statusline.ts` | `lucid setup statusline` — renders `scripts/statusline/*` into `~/.claude/`, merges `statusLine` into settings.json (backs up first) |
+| `src/setup/egm.ts` | `lucid setup egm` — installs `vendor/egm/` into `~/.claude/` without the plugin system, rewriting `${CLAUDE_PLUGIN_ROOT}` and `egm:` agent names on the installed copy. `vendor/egm/` itself stays byte-identical to upstream (see `vendor/README.md`); change behavior here, never there |
 | `scripts/statusline/lucid-statusline.mjs` | Status bar template. Quota from stdin `rate_limits` (CC ≥ 2.1.251), OAuth endpoint only for model-scoped weekly caps + fallback; cache split `{core, scoped}`; `🪟 ctx` from `context_window.used_percentage`. Percent normalisation happens exactly once, at the call site that knows the source format |
 | `src/tools/plan.ts` | Plan CRUD, task status transitions, archive/delete/cleanup — all scoped to the current project |
 | `src/memory/experience.ts` | Reward/penalize signals, decay (half-life ~14 days) |

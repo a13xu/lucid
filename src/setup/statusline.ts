@@ -64,7 +64,7 @@ export function withStatusLine(
 }
 
 /** Package root, derived from this module's location inside build/setup/. */
-function resolveLucidRoot(): string {
+export function resolveLucidRoot(): string {
   return join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 }
 

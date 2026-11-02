@@ -398,6 +398,22 @@ The skills are written for current Claude models: plain instructions with the re
 
 Re-running `init_project()` refreshes installed skills that differ from the shipped version and keeps the previous copy as `SKILL.md.bak`. It likewise refreshes the Lucid section it adds to the project's `CLAUDE.md` (between the `LUCID_SYNC` markers), leaving the rest of the file untouched.
 
+### Optional: Elephant-Goldfish Model
+
+Lucid bundles the [Elephant-Goldfish Model](https://github.com/google/elephant-goldfish-model) (EGM), a set of skills for designing and reviewing software before writing it. An "elephant" agent with full context drafts the spec, and "goldfish" reviewers with no conversation history or `CLAUDE.md` review it. `init_project` does not install it, because it is meant for features that need design decisions:
+
+```bash
+lucid setup egm
+```
+
+This writes skills to `~/.claude/skills/egm-*`, reviewers to `~/.claude/agents/egm-*.md`, and personas and standards to `~/.claude/egm/`. You do not need the EGM plugin, and should disable it if you have it. Restart Claude Code, then use `/egm-brainstorm`, `/egm-draft`, and `/egm-review <file>`.
+
+- **Claude Code 2.1.271 or later** is required for reviewer isolation; the command warns on older versions.
+- **Permissions:** reviewers read the installed files with normal permissions. The command prints the `Read(...)` rules to add to `/permissions` and does not add them for you.
+- **Updates:** re-running the command refreshes files that differ and keeps the previous copy as `<file>.bak`. A file removed upstream stays installed until you delete it.
+
+EGM is Apache-2.0, copyright 2026 Google LLC, and is not an officially supported Google product. Lucid is not affiliated with or endorsed by Google. The unmodified source and its commit are in `vendor/`; the installer rewrites plugin paths and agent names in the installed copy and marks each file it changes.
+
 ## Debugging
 
 ```bash

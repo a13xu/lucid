@@ -83,7 +83,7 @@ describe("installSkills", () => {
   it("does not rewrite a copy that differs only in line endings", () => {
     const { installed } = installSkills(dir);
     const skillFile = join(dir, ".claude", "skills", installed[0], "SKILL.md");
-    writeFileSync(skillFile, readFileSync(skillFile, "utf-8").replace(/\n/g, "\r\n"));
+    writeFileSync(skillFile, readFileSync(skillFile, "utf-8").replace(/\r?\n/g, "\r\n"));
     expect(installSkills(dir).updated).toEqual([]);
     expect(existsSync(skillFile + ".bak")).toBe(false);
   });

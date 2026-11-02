@@ -34,7 +34,11 @@ export async function maybeRunCli(argv: string[]): Promise<number | null> {
       const { runStatuslineSetup } = await import("./setup/statusline.js");
       return runStatuslineSetup();
     }
-    process.stderr.write(`Usage: lucid setup <grammars|statusline>\n`);
+    if (args[0] === "egm") {
+      const { runEgmSetup } = await import("./setup/egm.js");
+      return runEgmSetup();
+    }
+    process.stderr.write(`Usage: lucid setup <grammars|statusline|egm>\n`);
     return 64;
   }
 
@@ -94,6 +98,7 @@ interface HookPayload {
   tool_name?: string;
   tool_input?: {
     file_path?: string;
+    notebook_path?: string;
     path?: string;
     content?: string;
     new_string?: string;
@@ -125,7 +130,7 @@ async function guardPreEdit(
         const payload = JSON.parse(raw) as HookPayload;
         toolName = payload.tool_name ?? "Write";
         const ti = payload.tool_input ?? {};
-        path = ti.file_path ?? ti.path;
+        path = ti.file_path ?? ti.notebook_path ?? ti.path;
         // Only `Write` carries the full new file content. `Edit`/`MultiEdit`
         // carry replacement fragments, not the full post-write state — assessing
         // shrinkage on those produces false MAJOR_SHRINK blocks on every edit
